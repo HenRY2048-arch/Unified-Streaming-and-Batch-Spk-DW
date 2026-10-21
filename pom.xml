@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  数仓（T 层）构建：Maven + Scala 编译器（scala-maven-plugin）。
+
+  为什么用 Maven 而不是 sbt：
+    · 环境已容器化，运行时只有 Spark 镜像（内含 Java 11），没有 sbt；
+    · Maven 在宿主/CI 上都更常见，且复用 infra/jars/pom.xml 同一套阿里云镜像与依赖版本；
+    · 产物是**薄 jar**（Spark/Delta/Kafka 连接器都走 provided，运行时由 spark-submit 的 jars 参数提供），
+      这样镜像升级不会被迫重打 jar。
+
+  常用命令：
+    mvn -s RealTime/settings.xml -B clean package     → target/crt-warehouse-0.1.0.jar
+    （离线：加 -o；首次需联网拉 scala-maven-plugin 与 spark-sql 3.5.3）
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.hub</groupId>
+  <artifactId>crt-warehouse</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <scala.version>2.12.18</scala.version>
+    <scala.binary>2.12</scala.binary>
+    <spark.version>3.5.3</spark.version>
+    <delta.version>3.2.1</delta.version>
+    <jedis.version>5.1.2</jedis.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <!-- Spark / Delta / Kafka 连接器：编译期需要，运行期由镜像与 jars 参数提供 -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql-kafka-0-10_${scala.binary}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-spark_${scala.binary}</artifactId>
+      <version>${delta.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Tier0 写 Redis 用（P3.6） -->
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>${jedis.version}</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>4.9.2</version>
+        <executions>
+          <execution>
+            <id>scala-compile</id>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <args>
+            <arg>-target:jvm-1.8</arg>
+            <arg>-deprecation</arg>
+            <arg>-feature</arg>
+          </args>
+          <jvmArgs>
+            <jvmArg>-Xmx1g</jvmArg>
+          </jvmArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>

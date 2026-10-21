@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  用途：一次性把 Spark 容器运行所需的"额外依赖"拉到 infra/jars/，再用 volume 挂进容器。
+  为什么不用 spark-submit 的 packages 选项：
+    · 宿主/容器内没有 Delta / hadoop-aws / aws-sdk 的缓存（~/.ivy2 不存在），运行时解析要在容器内联网；
+    · 预下载 = 离线可复现、依赖版本钉死，后续 stream/batch/verify 三个入口复用同一份 jar。
+  用法（见 infra/README.md）：
+    mvn -s ../../RealTime/settings.xml -f pom.xml -B dependency:copy-dependencies
+        -DoutputDirectory=<仓库绝对路径>/infra/jars
+  运行期只把"必要的少量 jar"通过 spark-submit 的 jars 参数挂上，避免与镜像自带的
+  hadoop-client-runtime 重复。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.crt.infra</groupId>
+  <artifactId>crt-spark-extras</artifactId>
+  <version>1.0</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <spark.version>3.5.3</spark.version>
+    <scala.binary>2.12</scala.binary>
+    <scala.version>2.12.18</scala.version>
+    <delta.version>3.2.1</delta.version>
+    <hadoop.version>3.3.4</hadoop.version>
+    <aws.sdk.version>1.12.262</aws.sdk.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <!-- Delta Lake（含 delta-storage / antlr 等传递依赖） -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-spark_${scala.binary}</artifactId>
+      <version>${delta.version}</version>
+    </dependency>
+
+    <!-- S3A 连接器 + AWS SDK（SeaweedFS 走 S3 协议，path-style） -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-aws</artifactId>
+      <version>${hadoop.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-client-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-client-runtime</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-bundle</artifactId>
+      <version>${aws.sdk.version}</version>
+    </dependency>
+
+    <!-- Tier0 写 Redis（P3.6） -->
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>5.1.2</version>
+    </dependency>
+
+    <!-- 流①（Kafka → ODS）用：P3 阶段才需要，先一并备好 -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql-kafka-0-10_${scala.binary}</artifactId>
+      <version>${spark.version}</version>
+    </dependency>
+  </dependencies>
+</project>

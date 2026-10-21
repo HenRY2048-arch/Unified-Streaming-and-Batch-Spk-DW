@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "crt",
+      "credentials": [
+        { "accessKey": "crtadmin", "secretKey": "crtadmin123" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
