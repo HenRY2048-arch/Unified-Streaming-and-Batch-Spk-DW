@@ -21,6 +21,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 object Tier0 {
 
   def start(spark: SparkSession): StreamingQuery = {
+    waitForOds(spark)
     spark.readStream
       .format("delta")
       .load(Lake.odsEvents)
@@ -29,6 +30,29 @@ object Tier0 {
       .option("checkpointLocation", Lake.checkpoint("stream/tier0"))
       .queryName("tier0")
       .start()
+  }
+
+  /**
+   * 干净环境里 ODS 要等 Kafka 第一条消息落湖后才建立 schema。
+   * Tier0 是 ODS 的下游，必须先等上游表可用；超时则明确失败，避免无限静默等待。
+   */
+  private def waitForOds(spark: SparkSession): Unit = {
+    val timeoutSeconds = Config.getLong("stream.ods.wait.seconds", 300L)
+    val pollMillis = Config.getLong("stream.ods.poll.millis", 1000L).max(100L)
+    val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
+    var ready = DeltaIO.exists(spark, Lake.odsEvents)
+    if (!ready) {
+      println(s"[Tier0] waiting for ${Lake.odsEvents} (timeout=${timeoutSeconds}s)")
+      System.out.flush()
+    }
+    while (!ready && System.currentTimeMillis() < deadline) {
+      Thread.sleep(pollMillis)
+      ready = DeltaIO.exists(spark, Lake.odsEvents)
+    }
+    if (!ready) {
+      throw new IllegalStateException(
+        s"ODS not ready after ${timeoutSeconds}s: ${Lake.odsEvents}. Start the generator or increase stream.ods.wait.seconds")
+    }
   }
 
   private def process(spark: SparkSession, batch: DataFrame, batchId: Long): Unit = {
@@ -40,6 +64,7 @@ object Tier0 {
     // 重算窗口内的"证据"：只读 ODS，不读 DWD（Tier0 与批侧同源）
     val recent = DeltaIO.read(spark, Lake.odsEvents)
       .filter(col("event_ts") >= lit(since) && col("event_ts") <= lit(maxTs))
+      .dropDuplicates("event_id")
 
     val snapshot = heatSnapshot(recent, maxTs, batchId)
     writeSnapshot(spark, snapshot)
@@ -103,7 +128,7 @@ object Tier0 {
     val a2 = recent.filter(col("event_type") === "like")
       .groupBy(col("user_id"), window(col("event_ts"), "5 seconds"))
       .agg(count(lit(1)).as("cnt"), countDistinct(col("item_id")).as("items"))
-      .filter(col("cnt") >= 15 && col("items") >= 10)
+      .filter(col("cnt") >= 15 && col("items") >= 15)
       .select(lit("A2").as("rule"), col("user_id"), lit(null).cast("long").as("item_id"),
         col("window.start").as("ws"), col("cnt"))
 

@@ -21,7 +21,7 @@ public class DataManager {
     private final Map<String, List<Item>> itemsByTag = new HashMap<>();
     private final List<User> creators = new ArrayList<>();
     private long nextItemId = 200001L;
-    private final Random random = new Random();
+    private final Random random = new Random(AppConfig.derivedSeed(2));
 
     /** 已"上线"用户（种子全部立即上线；注入用户等 activationSimMs 到点，模拟"注册→首次打开"）。 */
     private final List<User> activeUsers = new ArrayList<>();
@@ -35,6 +35,7 @@ public class DataManager {
         loadInjectedUsers();
         loadItems();
         loadFollowSeed();
+        loadGraphState();
         activateLoadedUsers();
     }
 
@@ -132,6 +133,33 @@ public class DataManager {
         }
     }
 
+    /**
+     * 在种子图之上重放运行期边变更。
+     *
+     * 种子边是 t0 快照，后续 follow/unfollow 只存在于事件流；如果不在这里恢复，生成器重启后
+     * 会再次关注已经关注的人，制造重复 follow，并污染 A-02/R-04 和粉丝存量。
+     */
+    private void loadGraphState() {
+        File file = new File(AppConfig.GRAPH_STATE_FILE);
+        if (!file.exists()) return;
+        int applied = 0;
+        try {
+            for (String line : readLines(AppConfig.GRAPH_STATE_FILE)) {
+                String[] p = line.split("\\|", -1);
+                if (p.length != 3) continue;
+                long follower = Long.parseLong(p[1]);
+                long followee = Long.parseLong(p[2]);
+                if ("F".equals(p[0])) addFollowInMemory(follower, followee);
+                else if ("U".equals(p[0])) removeFollowInMemory(follower, followee);
+                else continue;
+                applied++;
+            }
+            System.out.println("[DataManager] replayed graph events=" + applied);
+        } catch (IOException | NumberFormatException e) {
+            System.err.println("[DataManager] graph state load failed: " + e.getMessage());
+        }
+    }
+
     private static List<String> readLines(String path) throws IOException {
         List<String> lines = new ArrayList<>();
         try (BufferedReader r = new BufferedReader(
@@ -192,15 +220,35 @@ public class DataManager {
 
     /** 关注：真正改图（边由旅途产生）。 */
     public void addFollow(long follower, long followee) {
+        addFollowInMemory(follower, followee);
+        appendGraphState("F", follower, followee);
+    }
+
+    private void addFollowInMemory(long follower, long followee) {
         following.computeIfAbsent(follower, k -> new HashSet<>()).add(followee);
         followers.computeIfAbsent(followee, k -> new HashSet<>()).add(follower);
     }
 
     public void removeFollow(long follower, long followee) {
+        removeFollowInMemory(follower, followee);
+        appendGraphState("U", follower, followee);
+    }
+
+    private void removeFollowInMemory(long follower, long followee) {
         Set<Long> s = following.get(follower);
         if (s != null) s.remove(followee);
         Set<Long> t = followers.get(followee);
         if (t != null) t.remove(follower);
+    }
+
+    private void appendGraphState(String kind, long follower, long followee) {
+        try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(
+                new FileOutputStream(AppConfig.GRAPH_STATE_FILE, true), StandardCharsets.UTF_8))) {
+            w.write(kind + "|" + follower + "|" + followee);
+            w.newLine();
+        } catch (IOException e) {
+            System.err.println("[DataManager] graph state append failed: " + e.getMessage());
+        }
     }
 
     public int followerCount(long userId) { return followers.getOrDefault(userId, Collections.emptySet()).size(); }

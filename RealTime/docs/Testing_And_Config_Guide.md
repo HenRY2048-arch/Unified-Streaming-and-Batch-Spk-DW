@@ -168,7 +168,7 @@ java -Dconfig.file=/abs/path/pressure_peak.properties -jar target/mock-generator
 | `kafka.acks` | `1` | 生产者 acks |
 | `mock.truth.topic` | `content_groundtruth` | 归因真值 topic |
 | `data.dir` | `data_files` | 种子输出目录（相对工作目录或绝对路径） |
-| `mock.schema.version` | `v1` | 事件契约版本（写进每条事件） |
+| `mock.schema.version` | `v2` | 线事件契约版本（写进每条事件） |
 
 ### 8.2 规模与种子
 
@@ -235,6 +235,36 @@ java -Dconfig.file=/abs/path/pressure_peak.properties -jar target/mock-generator
 | `mock.user.first.open.delay.min.minutes` / `.max` | `0` / `180` | 注册 → 首次打开的间隔（U-03 次留基线） |
 | `mock.user.id.inject.base` | `300001` | 注入用户 id 起始段（种子 100001–101000 之外） |
 | `mock.user.injected.file` | `data_files/dim_user_injected.csv` | 已注入用户 append 落盘；**重启不重发 id** |
+| `mock.graph.state.file` | `data_files/graph_state.log` | follow/unfollow 图变更日志；重启在种子图上重放 |
+| `mock.interaction.state.file` | `data_files/interaction_state.log` | like/dislike/fav 状态日志；重启恢复状态语义 |
+
+### 8.7 运行计划、故障与坏数据注入（2026-10-28）
+
+生成器容器与本地 jar 共用同一套配置。外部 profile 现在只覆盖显式提供的键，其余继承 classpath 默认值。
+
+| key | 默认 | 说明 |
+|---|---|---|
+| `mock.run.name` | `default` | 运行名称 |
+| `mock.run.duration.seconds` | `0` | 墙钟停止条件 |
+| `mock.run.target.event.days` | `0` | 模拟事件天停止条件 |
+| `mock.run.max.events` | `0` | 主事件数停止条件 |
+| `mock.random.seed` | `20261028` | 可复现随机种子 |
+| `mock.run.manifest.dir` | `data_files/run_manifest` | 每次运行写一个 JSON |
+| `mock.chaos.enabled` | `true` | 行为异常总开关 |
+| `mock.data_defect.enabled` | `false` | 坏数据总开关 |
+| `mock.data_defect.rate` | `0` | 坏数据命中率 |
+| `mock.data_defect.modes` | `invalid_json,missing_field,invalid_enum,wrong_type` | 坏数据模式 |
+| `mock.data_defect.duplicate.rate` | `0` | 重复消息比例 |
+| `mock.data_defect.drop.rate` | `0` | 丢消息比例 |
+| `mock.fault.pause.after.seconds` / `.duration.seconds` | `0` / `0` | 运行中暂停发送 |
+
+仓库提供三个观测 profile：
+
+```text
+RealTime/config/observation-normal.properties
+RealTime/config/observation-incidents.properties
+RealTime/config/observation-peak.properties
+```
 
 **验证口诀（实测口径）**：跑 45s → 消费 topic →
 ① `user_registered` 条数应等于 `dim_user_injected.csv` 行数（曾因提前 return 丢过一半）；

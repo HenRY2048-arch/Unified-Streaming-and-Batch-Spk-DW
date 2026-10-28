@@ -6,7 +6,7 @@
 > **不解决什么**：长期阈值调优。v1 的阈值、等待时长、降级开关已冻结（见 §5/§8）；
 > 后续由 agent 在给定区间内调参，但不能改口径与断言内容。
 >
-> 版本：v3.1（2026-10-20）｜上游依据：`Metric_Implementation_Guide.md`、`Warehouse_Design.md`
+> 版本：v3.2（2026-10-24）｜上游依据：`Metric_Implementation_Guide.md`、`Warehouse_Design.md`
 >
 > v2 变更：引入**"证据结论 × 处置动作 × 审批级别"三层**（参考 HSADL 的 evidence gate 后与本方案合并）；
 > 增加**双产物**（人看的 md + 机器读的 json）与**分区信任标记**；新增 §14「data agent 的读契约（预留）」。
@@ -16,6 +16,9 @@
 > 增加 §5.1「P3.8 前置实现条件」；清单与 `partition_status` 落 Delta；调度器定为 **Airflow**。
 >
 > v3.1 运行校准：DR-3 历史日缺水位→G2；QL-1 基线改 20%/14%/0.5%（D1/E1 重叠）；V-02 无快照→G3 limitation。
+>
+> v3.2 Data Agent 加固：V-02 阈值真正参与判定；DR/QL 滚动窗口按 7 天执行；
+> `partition_status` 逐表化并传播上游限制；`contract_hash` 改为覆盖事件/真值/种子/语义字典/热度公式的 SHA-256。
 
 ---
 
@@ -284,6 +287,8 @@ agent 直接读；不再考虑 SQLite）。仅剩：
 | 2026-10-20 | **v3**：冻结 Gate v1——QL ±3pp/±5pp + 7 日滚动、DR-3 5min×3、G2 仅 QL/DR-4、V-02 1e-9；V-01 改精确率+召回率；Q-01 去重键、Q-02 拆分与分母、R-06/`dwd/click`/字典 `limitations` 写成前置条件；manifest/partition_status 落 Delta；调度器定 Airflow |
 | 2026-10-20 | **v3 代码落地**：`verify/GateRunner` + `app/GateApp` 实现 Gate v1 的 DR/IV/CV/QL/RC/FX 检查，写 `ops/run_manifest`、`ops/partition_status` 与 JSON/MD 报告；Airflow DAG 见 `infra/airflow/dags/` |
 | 2026-10-20 | **v1 运行时校准**：10-18 验收发现事件天非完整 24h，DR-3 改为“历史日缺水位 G2 / 当前日 G1”；D1/E1 区间重叠，QL-1 基线改为可观测总量 20%/14%/0.5%；无 V-02 快照记 G3 limitation，不阻断批侧 |
+| 2026-10-24 | **v3.2 Data Agent 读契约加固**：RC-2-02 真正比较 `rel_diff`；QL/DR 历史窗按 7 日；CV-3/FX-1/FX-3 补结构断言；`partition_status` 按规范表逐表输出、单日全量替换并传播上游限制；JSON 报告补 run/policy/contract/input/limitations/approvals；`contract_hash` 改 SHA-256 综合指纹。代码与离线测试通过，端到端 Gate 待重跑 |
+| 2026-10-28 | **P3.9 运行验收**：修复 QL 历史行按位置读取导致的类型异常；10-29 Gate 20 条完整产出，`partition_status` 28 行；RC-2-02 因迟到数据 `max_rel_diff≈97.69%` 记 G3 limitation |
 
 ---
 
@@ -380,11 +385,17 @@ artifacts[]                   # 本次产出的表/文件/报告
 | `status` | 该分区最终结论（同上四种） |
 | `limitations` | 已知限制（如"右截断""上游缺 1 小时"） |
 | `policy_version` | 用哪版策略判的（阈值改过可追溯） |
+| `contract_hash` / `input_fingerprint` | 口径版本与本次输入指纹 |
+| `run_id` / `publish_final` | 产生该状态的运行，以及是否允许下游定稿使用 |
 | `updated_at` | 何时更新 |
 
 **为什么需要它**：看板和 agent 不应该每次自己去重跑门禁。它们只需要问一句
 "10-18 的 `dws/content_daily` 能不能用？"——查一行就够。
 这也是"降级"能被下游真正用起来的前提：**结论落在表里，而不是只留在日志里。**
+
+> P3.9 起，状态按规范表名逐表输出，不再只有少量具体表名或 `dws/*` 通配行；
+> 没有专用 Gate 的表会继承 ODS 上游状态，并在 `limitations` 中明确标注
+> "no dedicated gate for this table"。
 
 ---
 
@@ -408,7 +419,7 @@ artifacts[]                   # 本次产出的表/文件/报告
 | `semantic/metric_dict` | **有什么指标、口径是什么、能按哪些维度下钻** |
 | `ops/partition_status` | **这一天这张表能不能用、有什么限制** |
 | `gate-report.json` + `run_manifest` | **为什么是这个结论、哪条门给的、用的哪版策略** |
-| `contract_hash` | **口径有没有变过**（变了就不能跨版本比较） |
+| `contract_hash` | **口径有没有变过**：事件/真值/种子 Schema、40 指标、热度公式和逻辑版本的组合 SHA-256 |
 
 ### C.3 它怎么读我们的数据
 

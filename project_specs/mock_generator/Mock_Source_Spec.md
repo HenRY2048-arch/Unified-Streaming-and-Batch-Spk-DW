@@ -3,7 +3,7 @@
 > **本文件是模拟数据源（生成器）文档的唯一现行正本。**
 > 它**集结**了：实体与维表、**行为定义**、事件契约（超集 Schema）、算法（会话/分发/混沌/流量）、归因真值、配置项。
 > 替代并收编：旧 `RealTime_Mock_Generator_{Design,Implementation,User_Guide}.md`、`Event_Contract_Draft.md`、`Entity_Dimension_Draft.md`。
-> 版本：v0.9（2026-10-20）
+> 版本：v0.11（2026-10-28）
 > 状态：**契约 v1 已冻结；契约 v2 已落地（P1.6 完成）** ｜ 更新：见 §10 变更记录（本文件持续更新）
 > v2 增量：新增**新用户注入**（`user_registered`，**不带 `session_id`**，见 §6.9）与**模拟时钟**（§6.8）；
 > 澄清**停留时长语义**（§3.2）；口径后果见 `Metric_Definitions.md` §10.11。
@@ -155,7 +155,7 @@
 | 字段 | 说明 |
 |---|---|
 | `event_id` / `user_id` / `event_type` / `ts` / `session_id` / `platform` | 全部事件共有（`ts`＝ISO-8601，GMT+8，`SSSX`） |
-| `schema_version` | 契约版本（如 `v1`）—— **新增**，用于向前兼容 |
+| `schema_version` | 线事件契约版本；P3.9 起生成器统一输出 **`v2`**，历史样本/旧 ODS 中的 `v1` 仍可读取 |
 
 > `platform` 取值固定为 `{ios, android, web}`，**不扩展**。
 
@@ -373,6 +373,22 @@ content_groundtruth ► ods/groundtruth ─► verify/attribution（V-01）
 | `mock.user.first.open.delay.min.minutes` / `max` | `0` / `180` | 注册 → 首次打开的间隔（决定 U-03 次留基线） |
 | `mock.user.id.inject.base` | `300001` | 注入用户 id 起始段（种子 100001–101000 之外） |
 | `mock.user.injected.file` | `data_files/dim_user_injected.csv` | 已注入用户 append 落盘（重启不重发 id） |
+| `mock.graph.state.file` | `data_files/graph_state.log` | 运行期关注增删日志；重启在种子图上重放 |
+| `mock.interaction.state.file` | `data_files/interaction_state.log` | like/dislike/fav 状态日志；重启恢复一次性与互斥语义 |
+
+**v0.11 观测控制面（2026-10-28）**
+
+| key | 默认 | 说明 |
+|---|---|---|
+| `mock.run.name` | `default` | 本次运行名称，用于日志和运行清单 |
+| `mock.run.duration.seconds` | `0` | 真实墙钟运行上限；0 = 不按墙钟停止 |
+| `mock.run.target.event.days` | `0` | 模拟事件时间目标天数；0 = 不按事件天停止 |
+| `mock.run.max.events` | `0` | 主事件数上限；0 = 不限 |
+| `mock.random.seed` | `20261028` | 组件随机种子 |
+| `mock.run.manifest.dir` | `data_files/run_manifest` | 每次运行写一个 JSON 清单 |
+| `mock.chaos.*` | 见配置正本 | A1/A2、D1/E1、极长驻留、乱序的显式开关、比例和区间 |
+| `mock.data_defect.*` | 关闭 | 坏 JSON、缺字段、非法枚举、错类型、重复、丢弃注入 |
+| `mock.fault.pause.*` | `0` | 运行中人为暂停发送的墙钟时刻与时长 |
 
 **调参指南（按目标选旋钮）**
 
@@ -458,3 +474,5 @@ java -jar target/mock-generator-1.0-SNAPSHOT.jar
 | 2026-10-16 | **v0.7（契约 v2 定案，待 P1.6 实现）**：新增 §6.8 **模拟时钟**（`mock.clock.speedup`，需同步改 `DistributionService` 新鲜度）与 §6.9 **新用户注入**（`user_registered`，**无 `session_id`**，id 高位段 + `dim_user_injected.csv` 落盘防重启重发）；§3.2 **澄清停留语义**（`duration_sec` 为模型真值、非 ts 差，实测 ts 差中位 0.965s vs duration 中位 24.03s）；§7 补 v2 配置键。目的：让 `U-02/U-03/A-04/R-05` 具备"何时第一次见 / 跨天窗口"的语义 |
 | 2026-10-17 | **v0.8（P1.6 落地）**：§6.8 按**最终实现**重写——全局时钟只由模型活动推进（不绑真实时间）、事件时间戳取**用户时钟**、会话开始锚定全局、并发会话上限 30、过期会话收口、落盘续跑；`leave_ts−enter_ts ≡ duration_sec`（实测中位 0.003s）。§7 的 v2 配置表替换为实际键（`mock.session.max.open` 等，移除未采用的 `speedup`/`gap.*`）。实测：1 事件天 ≈100 真实秒、注册速率精确、id 重启不重发、CSV 与 topic 注册事件数一致 |
 | 2026-10-20 | **v0.9（文档对齐）**：契约 v2 标记为**已落地**；E1 明确为“短停留（<0.8s，不按内容长度筛选）”，长内容短停留由 T 层 Q-02 诊断；§8 的“已知待修”改为已修 |
+| 2026-10-24 | **v0.10（P3.9）**：线 `schema_version` 统一为 `v2`；新增关注图/互动状态追加日志并在重启恢复；A2 固定选 15 篇未表态内容；A1/A2 同时产出归因真值。状态日志从本次升级起生效，升级前历史变更不自动回填 |
+| 2026-10-28 | **v0.11（观测控制面）**：运行计划支持墙钟时长、模拟事件天、最大事件数三种停止条件；随机主种子、显式 chaos 参数、坏数据/重复/丢弃/发送暂停注入、运行 JSON 清单和容器化 profile 落地。默认不注入坏数据，既有契约字段不变 |

@@ -42,7 +42,10 @@
                      GateApp → ops/run_manifest / partition_status / reports
 ```
 
-- **中间件容器化**：Kafka 跑在 `infra/docker-compose.yml` 起的容器 `crt-kafka` 里；生成器以**本机进程**运行并连 `localhost:9092`。
+- **全容器运行**：Kafka/Redis/SeaweedFS、生成器和 Spark 均由 `infra/docker-compose.yml` 启动；
+  宿主 jar 仅作为本地调试备用，连接 EXTERNAL `localhost:9092`。
+- **当前运行方式（2026-10-28）**：生成器也提供 `crt-mock-generator:0.1.0` 容器，默认通过 INTERNAL
+  `kafka:19092` 发送；`RealTime/config/observation-{normal,incidents,peak}.properties` 可选择观测 profile。
 - **两个 topic**：主事件流 `content_events`、归因真值 `content_groundtruth`（各 3 分区、RF=1）。
 - **数据目录**：`data.dir`（默认 `RealTime/data_files`），存放三份种子 CSV。
 - 环境细节与启停见 `infra/README.md`；操作步骤见 `Testing_And_Config_Guide.md`。
@@ -98,7 +101,7 @@
 | 字段 | 说明 |
 |---|---|
 | `event_id` / `user_id` / `event_type` / `ts` / `session_id` / `platform` | `ts`＝ISO-8601（GMT+8，`SSSX`）；`platform ∈ {ios, android, web}` |
-| `schema_version` | 契约版本（当前 `v1`） |
+| `schema_version` | 线事件契约版本（P3.9 起当前 `v2`；旧数据可为 `v1`） |
 
 **来源 / 上下文字段（结果事件携带）**：`channel`（`follow_feed`/`recommend`/`explore`/…）、`batch_id`、`position`、`source_item_id`、`source_user_id`。
 
@@ -249,6 +252,14 @@
 | `EventLog` / `ExposureItem` | 事件 POJO（超集 Schema）/ 批次内候选 |
 | `GroundTruth` / `GeneratedBatch` | 真值 POJO / 一次生成的结果容器 |
 | `User` / `Item` | 实体（含运行期 `activityScore`，不落维表） |
+
+运行期状态：
+
+- `dim_user_injected.csv`：新用户 id 与属性追加日志，防止重启重复发号；
+- `graph_state.log`：`follow/unfollow` 边变更日志，启动时在种子图上重放；
+- `interaction_state.log`：`like/dislike/fav` 状态日志，启动时恢复一次性与互斥语义。
+
+P3.9 起 A1/A2 混沌事件也写独立归因真值；A2 保证 15 条点赞落在 15 篇不同且尚未表态的内容上。
 
 ---
 

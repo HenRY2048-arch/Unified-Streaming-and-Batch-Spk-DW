@@ -2,7 +2,7 @@
 
 > 地位：`Warehouse_Design.md` 的**落地细化**（表 / 列 / 粒度 / 分区 / 来源）。
 > 口径以 `Metric_Definitions.md` 为准；数据定义以 `Mock_Source_Spec.md` 为准。
-> 版本：v1.1 ｜ 2026-10-20 ｜ 状态：**P3.8 前置修正已登记；落地时列名仍可能微调**
+> 版本：v1.2 ｜ 2026-10-28 ｜ 状态：**P3.9 读契约字段已登记并完成端到端运行验收**
 
 ## 0. 约定
 
@@ -94,7 +94,7 @@ Tier0 输入**只读 `ods/events`**，不读 DWD、不直读 Kafka；三个输�
 
 | 表 / 文件 | 内容 |
 |---|---|
-| `semantic/metric_dict` | `metric_id, name, definition, numerator, denominator, grain, dims, tier, source_fields, recomputable, truth_source, nature, limitations`（`nature` = 业务/风控/验收/自检；`limitations` = 推断量/注入噪声/右截断/自检性质） |
+| `semantic/metric_dict` | `metric_id, name, definition, numerator, denominator, grain, dims, tier, source_fields, recomputable, truth_source, nature, limitations`；P3.9 新增 agent 字段 `query_table, query_mode, read_only, contract_version`（查询表与访问模式显式化） |
 | `Metric_Definitions.md` | 人类可读的指标口径（与元数据表一一对应） |
 
 ## 7. Tier0 热度参数（`heat-v1`，已冻结）
@@ -117,7 +117,7 @@ Tier0 输入**只读 `ods/events`**，不读 DWD、不直读 Kafka；三个输�
 | 表 | 粒度 | 分区 | 主要列 | 说明 |
 |---|---|---|---|---|
 | `ops/run_manifest` | 一条 gate 执行 | `run_id`/`dt` | `run_id, stage, gate_id, class, level, dt, status, metric_value, threshold, action_taken, approval, publish_final, policy_version, contract_hash, input_fingerprint, ts, detail` | 每次运行的 Gate 清单；支撑按段跳过与事后追责 |
-| `ops/partition_status` | `dt × table` | `dt` | `dt, table, status(pass/pass_with_limitations/needs_confirmation/blocked), limitations, policy_version, updated_at` | 看板/agent 的“这张表今天能不能用” |
+| `ops/partition_status` | `dt × 规范表` | `dt` | `dt, table, status(pass/pass_with_limitations/needs_confirmation/blocked), limitations, policy_version, contract_hash, input_fingerprint, run_id, publish_final, updated_at` | P3.9 起逐表输出；一次运行全量替换该 `dt`；无专用 Gate 的表继承 ODS 限制并明确标注 |
 | `ops/reports`（文件） | 一次运行 | `run_id` | `gate-report.md`（人读）、`gate-report.json`（机器读） | 两份由同一份 manifest 生成 |
 
 ## 8. 待定

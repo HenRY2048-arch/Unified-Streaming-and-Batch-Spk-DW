@@ -35,7 +35,7 @@ public class MasterDataSeeder {
                 return;   // 版本一致，复用现有种子
             }
 
-            Random rnd = new Random();
+            Random rnd = new Random(AppConfig.derivedSeed(1));
             Map<String, String> tagToCategory = buildTagToCategory();
 
             List<User> users = buildUsers(rnd, tagToCategory);

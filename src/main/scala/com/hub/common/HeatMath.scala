@@ -14,7 +14,9 @@ object HeatMath {
 
   def heatFor(events: DataFrame, anchor: java.sql.Timestamp, minutes: Int): DataFrame = {
     val since = new java.sql.Timestamp(anchor.getTime - minutes.toLong * 60000)
+    // Kafka 至少一次语义与 checkpoint 重放会在 ODS 留下重复证据；计算指标前必须按事件主键去重。
     val inWindow = events.filter(col("event_ts") > lit(since) && col("event_ts") <= lit(anchor))
+      .dropDuplicates("event_id")
 
     val exposure = inWindow.filter(col("event_type") === "exposure_batch")
       .select(explode(col("items")).as("it"))

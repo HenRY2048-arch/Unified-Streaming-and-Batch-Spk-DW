@@ -1,5 +1,5 @@
 // =============================================================================
-// P3.8 验收：Gate 信任表 + 前置修正后的关键表
+// P3.8/P3.9 验收：Gate 信任表 + 语义查询契约 + 前置修正后的关键表
 // =============================================================================
 import com.hub.common._
 import org.apache.spark.sql.functions._
@@ -28,12 +28,16 @@ if (DeltaIO.exists(spark, Lake.dwsRetentionDaily)) {
 }
 
 say("=" * 90)
-say("③ 字典 limitations / 性质")
+say("③ 字典 limitations / 性质 / Data Agent 查询字段")
 if (DeltaIO.exists(spark, Lake.semanticMetricDict)) {
   val d = DeltaIO.read(spark, Lake.semanticMetricDict)
   say(s"rows=${d.count()}，有 limitations（非 —）：${d.filter(col("limitations") =!= "—").count()}")
+  say(s"query_table null=${d.filter(col("query_table").isNull).count()}，" +
+    s"query_mode 非法=${d.filter(!col("query_mode").isin("materialized", "compute_on_demand", "stream_snapshot", "verification", "redis_only")).count()}")
   d.groupBy("nature").count().orderBy("nature").collect()
     .foreach(r => say(s"  ${r.getString(0)} -> ${r.getLong(1)}"))
+  d.groupBy("query_mode", "query_table").count().orderBy("query_mode", "query_table").collect()
+    .foreach(r => say(s"  ${r.getString(0)} ${r.getString(1)} -> ${r.getLong(2)}"))
 }
 
 say("=" * 90)
@@ -47,8 +51,13 @@ if (DeltaIO.exists(spark, Lake.opsRunManifest)) {
 if (DeltaIO.exists(spark, Lake.opsPartitionStatus)) {
   val p = DeltaIO.read(spark, Lake.opsPartitionStatus)
   say(s"partition_status rows=${p.count()}")
+  val latestDt = p.agg(max("dt")).head.getString(0)
+  say(s"latest dt=$latestDt rows=${p.filter(col("dt") === latestDt).count()} " +
+    s"wildcard=${p.filter(col("table").contains("*")).count()}")
+  say(s"contract_hash null=${p.filter(col("contract_hash").isNull).count()}，" +
+    s"input_fingerprint null=${p.filter(col("input_fingerprint").isNull).count()}")
   p.select("dt", "table", "status", "limitations").orderBy(desc("dt"), asc("table")).collect()
-    .take(20).foreach(r => say(s"  ${r.getString(0)} ${r.getString(1)} ${r.getString(2)} ${r.getString(3)}"))
+    .take(40).foreach(r => say(s"  ${r.getString(0)} ${r.getString(1)} ${r.getString(2)} ${r.getString(3)}"))
 } else say("  partition_status missing")
 
 say("=" * 90)
@@ -64,6 +73,7 @@ if (DeltaIO.exists(spark, Lake.verifyAttribution)) {
 if (DeltaIO.exists(spark, Lake.verifyHeat)) {
   val h = DeltaIO.read(spark, Lake.verifyHeat)
   val q = h.filter(col("rel_diff").isNotNull).stat.approxQuantile("rel_diff", Array(0.5, 0.95, 1.0), 0.001)
-  say(f"  V-02 rows=${h.count()} rel_diff p50=${q(0)}%.6f p95=${q(1)}%.6f max=${q(2)}%.6f")
+  val threshold = Config.getDouble("gate.v02.rel.diff", 1e-9)
+  say(f"  V-02 rows=${h.count()} rel_diff p50=${q(0)}%.6f p95=${q(1)}%.6f max=${q(2)}%.6f threshold=$threshold")
 }
 say("=" * 90)

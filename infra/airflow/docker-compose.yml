@@ -1,0 +1,89 @@
+# CRT Airflow 本地运行环境。
+#
+# 结构：
+#   postgres          Airflow 元数据库
+#   airflow-init      迁移数据库 + 创建 admin 用户
+#   airflow-webserver Web UI（宿主 8080）
+#   airflow-scheduler 调度 DAG
+#
+# Airflow 容器通过挂载 Docker socket 调用项目里的 run_warehouse.sh；
+# 项目和容器内路径保持一致，避免 Docker Compose 的绑定挂载路径错位。
+
+name: crt-airflow
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5
+  # Docker Desktop 的 socket 属于 nogroup；本地单机环境用 root 最省事。
+  user: "0:0"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "2"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Shanghai
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+    AIRFLOW__WEBSERVER__WEB_SERVER_PORT: "8080"
+    AIRFLOW__WEBSERVER__SECRET_KEY: crt-airflow-local-secret
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+    CRT_PROJECT_ROOT: /home/henry/projects/Community_Real_Time
+  volumes:
+    # DAG、日志、插件目录。
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    # 用宿主绝对路径挂载项目，让内层 Spark Compose 的 bind mount 路径也正确。
+    - ../..:/home/henry/projects/Community_Real_Time
+    # 让 Airflow 内的 run_warehouse.sh 能调用宿主 Docker。
+    - /var/run/docker.sock:/var/run/docker.sock
+    - /mnt/wsl/docker-desktop/cli-tools/usr/bin/docker:/usr/local/bin/docker:ro
+    - /mnt/wsl/docker-desktop/cli-tools/usr/local/lib/docker/cli-plugins/docker-compose:/usr/local/lib/docker/cli-plugins/docker-compose:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      bash -c "airflow db migrate &&
+      (airflow users create --username admin --password admin
+      --firstname Admin --lastname User --role Admin --email admin@example.com || true)"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  airflow-db:

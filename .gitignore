@@ -66,6 +66,9 @@ node_modules/
 .sbt/
 .ivy2/
 .gradle/
+.airflow-venv/
+.observability-venv/
+.airflow-home/
 
 # ---- Logs / local Airflow state ----
 *.log

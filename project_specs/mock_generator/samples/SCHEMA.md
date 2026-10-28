@@ -51,7 +51,7 @@
 | `ts` | String | ISO-8601（GMT+8，`SSSX`） |
 | `session_id` | String | 会话 id；`user_registered` 不出现 |
 | `platform` | String | `ios/android/web` |
-| `schema_version` | String | 当前 `v1` |
+| `schema_version` | String | 当前 `v2`；历史样本/旧 ODS 可为 `v1` |
 
 ### 2.2 上下文与可选字段
 
@@ -98,7 +98,7 @@
 
 ## 3. `groundtruth_sample.jsonl`（真相层）
 
-每行一条归因真值；**不进主事件流**，只用于 V-01。
+每行一条归因真值；**不进主事件流**，所以会有与主事件流存在重复字段，只适用于V-01
 
 | 字段 | 类型 | 说明 |
 |---|---|---|

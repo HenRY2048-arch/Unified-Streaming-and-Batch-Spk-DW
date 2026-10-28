@@ -6,13 +6,18 @@
 ## 0. 60 秒速览
 
 - **项目**："微博式内容社区"的**批流一体实时数仓**，个人练手项目（非生产级，但要求合理）。
-- **当前阶段**：生成器 v2 ✅、存储冒烟 ✅、**数仓 P3.1–P3.7 全部落地并验收**
-  （ODS → 维表 → 明细 → 主题 → 语义层 → Tier0 → 对账）。**P3.8 代码已实现，编译通过，待运行验收**。
+- **当前阶段**：生成器 v2 ✅、存储冒烟 ✅、**数仓 P3.1–P3.9 全部落地并完成新运行验收**
+  （ODS → 维表 → 明细 → 主题 → 语义层 → Tier0 → 对账 → Gate）；10-29 为 `pass_with_limitations`。
+  **全链路工作负载已完成容器化验证，整体观测入口和教学手册已落地。**
+  **P4 Data Agent 已进入架构 brainstorm，尚未开始工程实现。**
 - **代码现状**：21 个 Scala 文件（`common/stream/batch/verify/app`），构建走 **Maven + scalac**；
   旧 14 个文件已移出到 `/tmp/crt_legacy_warehouse_2026-10-17/`。
-- **文档现状**：口径 v1.3、生成器正本 v0.9、指标实现说明 v8、**Gate 分级方案 v3.1**（独立成文）。
-- **下一个动作**：**启动独立 data agent 工程**（P3.8 已完成运行验收：10-18 Gate `pass_with_limitations`）。
-  agent 只读 `semantic/metric_dict`、`ops/partition_status`、`ops/run_manifest`/`gate-report.json`、`contract_hash`。
+- **文档现状**：口径 v1.3、生成器正本 v0.11、指标实现说明 v8、**Gate 分级方案 v3.2**（独立成文）；
+  Data Agent 有独立 brainstorm 记录，尚不是实现方案。
+- **下一个动作**：基于新观测基线继续 Data Agent 的需求与架构收敛；未获用户确认前不创建 Agent 工程。
+  当前读契约仍是 `semantic/metric_dict`、`ops/partition_status`、`ops/run_manifest`/`gate-report.json`、`contract_hash`。
+- **当前服务**：Airflow Docker `LocalExecutor + Postgres`，入口 `http://localhost:8080`（`admin/admin`），
+  `crt_daily_batch` / `crt_weekly_vacuum` 已暂停；Kafka/Redis/SeaweedFS 正在运行。DAG 源码在 `infra/airflow/dags/`。
 - ⚠️ **协作约定**：动手（改代码/跑任务）前先说一声；docker / 联网 / 沙箱外写入直接申请权限。
 
 ## 1. 项目目标（从头至今）
@@ -50,15 +55,17 @@
 | 8 | `RealTime/`（源码）+ `RealTime/docs/` | **生成器工程**：链路与架构说明、测试与配置指南 |
 | 9 | `src/main/scala/**`（**21 个文件**）+ `pom.xml` | **数仓新实现**：`common/stream/batch/verify/app`；旧 14 文件已移出（见 §5.3 映射） |
 | 9.1 | `project_specs/overall_spec/Metric_Implementation_Guide.md` | **指标怎么算、怎么读、能不能当门禁**（讲人话版） |
-| 9.2 | `project_specs/overall_spec/Gate_Grading_Scheme.md` | **门禁如何分级**（v3.1：Status × Action × Approval + 六类 × 层级 + 注册表） |
+| 9.2 | `project_specs/overall_spec/Gate_Grading_Scheme.md` | **门禁如何分级**（v3.2：Status × Action × Approval + 六类 × 层级 + 注册表） |
 | 9.3 | `project_specs/overall_spec/Deployment_And_Operations.md` | **整体链路搭建 / 启动 / runbook / 调试 / 验收记录** |
+| 9.3.1 | `project_specs/overall_spec/Full_Observation_Runbook.md` | **从空环境到整体观测报告的逐步教学手册**（Docker 恢复、生成器 profile、批/对账/Gate） |
+| 9.4 | `project_specs/data_agent/Data_Agent_Discussion.md` | **Data Agent 架构 brainstorm**：需求、边界、候选技术栈、RAG 定位和开放问题；非实现契约 |
 | 10 | `项目解构与链路基线.md` | **历史快照**（改造前），理解"改什么、为什么改" |
 | 11 | `infra/README.md`、`infra/docker-compose.yml` | 本地环境：容器、端口、凭证、启停与验证 |
 
 **明确忽略（勿作现行前提）**：
 
 - `project_specs/_deprecated/**`（旧核心规约、旧指标体系、Drift 规约、旧 mock 三件套、两份草案）——见其 `README.md`
-- `venv/`、`.venv/`、`Untitled.ipynb`、`.ipynb_checkpoints/`、`.virtual_documents/`、`data-quality/`（噪音）
+- `venv/`、`.venv/`、`.airflow-venv/`、`.airflow-home/`、`Untitled.ipynb`、`.ipynb_checkpoints/`、`.virtual_documents/`、`data-quality/`（噪音）
 - `RealTime/` 内 IDE 产物（`.metals/ .trae/ .vscode/ .bloop/ target/`）
 
 ## 3. 决策台账（按时间顺序）
@@ -102,8 +109,11 @@
 | 35 | Gate v1 冻结 | QL 用可观测基线 20%/14%/0.5%，±3pp 告警 / ±5pp 或连续 2 天同向偏离降级（<200 用 7 日滚动）；DR-3 当前日 5min×3、历史日缺水位 G2；G2 仅 QL/DR-4 且 `publish_final=false`；V-02 当前 `rel_diff≤1e-9`，无快照 G3；V-01 精确率≥0.99 且 `missing_cnt=0`/召回≥0.999；另 DR-4-02=0.98、QL-2=30%/50% 与 5pp/10pp | Gate §5/§8 |
 | 36 | 三个语义口径 | 热度**不要求曝光**才计停留分；负反馈保留混合口径（`dislike + bounce`，超速不重复计）；留存 cohort 改注册日/首见日 + `cohort_type`，档位 1/3/7 | Metric_Definitions §10.11；Guide v8 |
 | 37 | P3.8 前置修正 | 补 `dwd/click`；`enter_profile` 进 `dwd/relation`；V-01 加 `missing_cnt/recall`；Q-02 拆 `short_stay`/`long_content_short_stay`；字典加 `limitations`；U-03 cohort 与 `user_daily` 重跑口径 | Gate §5.1；Warehouse_Tables |
-| 38 | data agent 边界 | **不嵌数仓链路**；数仓只交付读契约（字典/`partition_status`/manifest/`contract_hash`），agent 独立开发；本轮只预留 | Gate 附录 C |
+| 38 | data agent 边界 | **不嵌数仓链路**；数仓只交付读契约（字典/`partition_status`/manifest/`contract_hash`），agent 独立开发；当前已进入架构讨论，仍未实现 | Gate 附录 C；Data Agent Discussion |
 | 39 | E1 / 短停留语义 | E1 注入为 `<0.8s` 短停留（**不按 `content_len` 筛选**）；“长内容短停留”只作 Q-02 诊断；QL 5% 基线对 `short_stay` | Mock_Source_Spec §6.5；Metric_Definitions §10.11 |
+| 40 | Airflow 运行时 | **Docker `LocalExecutor + Postgres` 已运行**；UI `localhost:8080`，DAG 暂停；scheduler 通过 Docker socket 提交一次性 Spark 容器，已验证 | `infra/airflow/README.md`；Deployment §3.2 |
+| 41 | Data agent 前置加固（P3.9） | Gate 真正执行 V-02 阈值与 7 日滚动；`partition_status` 逐表化并传播上游限制；`contract_hash` 覆盖事件/真值/种子/语义字典/热度公式；生成器恢复互动与关注图状态；Tier0 先按 `event_id` 去重；线事件契约统一为 `v2` | Gate §5/§8；Tables §6/§7.1；Mock Source §6.9 |
+| 42 | 观测控制面与全容器运行 | 生成器增加运行计划、显式 chaos、坏数据/重复/丢弃/暂停注入、运行清单和容器镜像；Spark/Airflow/Generator 均容器化；新增 `bootstrap_runtime.sh`、`observe_warehouse.*` 与 `Full_Observation_Runbook.md` | Mock Source v0.11；Deployment v1.2 |
 
 ## 4. 进度看板
 
@@ -120,8 +130,11 @@
 | **P3.6 Tier0** | 热度 1h/24h → Redis + `tier0/heat_snapshot`（1,947 行 / 536 内容）；在线活跃 → Redis（`active_users=20`）；作弊 A1/A2 → `tier0/cheat_events`（13 行） | ✅ |
 | **P3.7 对账** | `verify/{AttributionVerify,HeatVerify}` + `app/VerifyApp`；**V-01 六类转化 × 3 天全部 100%**；V-02 1,947 行（rel_diff=0，见 §6 说明） | ✅ |
 | **P3.8 编排** | **运行验收通过（10-18）**：Gate `pass_with_limitations`；V-01 1,252/1,252/0；V-02 1,947 行 rel0；manifest/partition_status 可读 | ✅（带已知限制） |
-| **P3 数仓（T 层）** | P3.1–P3.8 完成；下一步 data agent（独立工程） | ✅ |
-| **P4 完善** | data agent（独立工程，不嵌数仓链路） | 🚧 待启动 |
+| **P3.9 Data Agent 读契约加固** | V-02 阈值/7 日滚动真正执行；逐表信任+上游传播；SHA-256 综合 `contract_hash`；语义字典查询接口；生成器状态恢复；Tier0 去重 | ✅ 代码 + 新端到端验收 |
+| **P3 数仓（T 层）** | P3.1–P3.9 已完成；10-29 Gate `pass_with_limitations`，V-01 521/521/0，V-02 非零但 G3 | ✅ 新基线形成 |
+| **Airflow 运行环境** | Docker LocalExecutor + Postgres；两个 DAG 已暂停；scheduler→Spark 已验证 | ✅ |
+| **观测控制面** | 生成器 profile/时长/故障注入/运行清单；统一 `observe_warehouse.sh` 与结构化观测 JSON | ✅ |
+| **P4 完善** | Data Agent 架构 brainstorm 已开始；不嵌数仓链路，禁止执行重跑/修复 | 🚧 讨论中，未实现 |
 
 ## 5. 当前系统事实（速查）
 
@@ -137,6 +150,13 @@
   - `app/`：`StreamApp`（三条查询）、`BatchApp`（`--step dim|dwd|dws|semantic|all`）、`VerifyApp`、`GateApp`、`VacuumApp`。
 - **P3.8 已写代码**：Gate 执行器（20 条注册表 + Gate v1 定值）、`ops/run_manifest` / `ops/partition_status`、
   Airflow DAG（`infra/airflow/dags/`）、周维护 VACUUM；前置修正（`dwd/click`、R-06、V-01、Q-02、留存、`limitations`）已落。
+- **P3.9 已完成并运行验收**：V-02 阈值/7 日窗口、逐表信任传播、SHA-256 综合 `contract_hash`、
+  语义字典 Data Agent 查询字段、生成器互动/关注状态恢复、A1/A2 真值、Tier0 `event_id` 去重、线契约 `v2`。
+- **观测控制面（2026-10-28）**：生成器支持三停止条件、随机种子、显式 chaos、坏 JSON/缺字段/非法枚举/错类型/重复/丢弃/暂停注入；
+  `RealTime/config/observation-*.properties` 提供 normal/incidents/peak；每次运行写 `run_manifest/<run_id>.json`。
+- **单次编排**：`infra/scripts/run_observation.sh` 一次完成构建 → 环境 → stream → generator → Batch → Verify → Gate → observe；
+  `TARGET_DT=auto` 通过 ODS 下一天分区自动选目标日。常驻流作业已成为 compose `stream` 服务。
+- **全容器运行**：Kafka/Redis/SeaweedFS/Spark/Generator/Airflow 均为容器；宿主只保留薄命令入口。
 - **运行脚本**（都在 `infra/scripts/`）：`run_warehouse.sh <class> [args]`、`run_shell.sh <scala 脚本>`、
   `verify_p3_batch2.scala` / `verify_p3_batch3.scala` / `verify_p3_batch4.scala`（三批验收）、
   `check_ods.scala`（ODS 自检）、`diag_v01.scala`（归因定点诊断）。
@@ -162,6 +182,12 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
 10-18 Gate `pass_with_limitations`（退出 0），10-19 为部分日；`run_manifest` 80 行/4 次运行，
 `partition_status` 26 行。详见 `Deployment_And_Operations.md` §7。
 
+**P3.9 全容器观测基线（2026-10-28）**：ODS `13,807 / truth 1,069`，覆盖 10-28～10-30；
+DIM `user 1,133 / item 590 / edge 10,092`；DWD `exposure 32,293 / click 3,781 / consume 2,872 /
+interaction 977 / relation 228 / publish 90 / session 1,610`；11 张 DWS 与 40 行字典全部生成。
+完整事件天 10-29 Gate `pass_with_limitations`：V-01 521/521/0；V-02 4,538 行，
+`p50=0 / p95≈7.69% / max≈97.69%`，说明流快照后仍有迟到事件，按 RC-2-02 G3 记录。
+
 ### 5.1 环境
 
 | 项 | 值 |
@@ -170,9 +196,20 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
 | Docker | Docker Desktop 29.7.2 + compose v5.4.0；**沙箱内无 docker 权限、无 sudo、网络受限** → 相关命令**必须走沙箱外（向用户申请）** |
 | 容器 | `crt-kafka`（`apache/kafka:4.1.0`，9092 EXT / 19092 INT）、`crt-redis`（Redis Stack，6379）、`crt-s3`（`chrislusf/seaweedfs`，8333/9333/8888） |
 | Spark | 镜像 `apache/spark:3.5.3`（**内置 Java 11**，与 Delta 3.2.1 精确配对），按需 `docker compose --profile tools …` |
+| Airflow | **Docker LocalExecutor + Postgres**；入口 `http://localhost:8080`；账号 `admin/admin`；DAG 暂停；scheduler→Spark 已验证 |
+| Generator | `crt-mock-generator:0.1.0` 容器；profile 由 `CRT_GENERATOR_PROFILE` 选择；运行清单落 `RealTime/data_files/run_manifest/` |
 | S3 | 容器内 `http://seaweedfs:8333` ／ 宿主 `http://localhost:8333`；**path-style**；首次复制 `infra/seaweedfs/s3.example.json` → `s3.json`（实际文件已 gitignore） |
 | lake root | **`s3a://crt-lake/`**（桶已建；aws-cli 验证建桶/上传/鉴权通过） |
 | Kafka topic | `content_events`、`content_groundtruth`（各 3 分区，RF=1） |
+
+**当前 Airflow 入口**：
+
+- UI：`http://localhost:8080`（`admin` / `admin`）
+- 启动：`docker compose -f infra/airflow/docker-compose.yml up -d`
+- 停止：`docker compose -f infra/airflow/docker-compose.yml down`
+- 备用宿主 venv：`infra/airflow/run_local.sh` / `stop_local.sh`
+- 运行状态：`.airflow-venv/` + `.airflow-home/`（均已 gitignore）
+- Docker 备选：`infra/airflow/docker-compose.yml`；本次 Docker Hub 拉取 `unexpected EOF`，未采用
 
 ### 5.2 生成器（`/RealTime`，已完成 + P1.6 v2）
 
@@ -204,6 +241,22 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
 | `RedisSink` | `stream/RedisSink`（只写聚合后的 top-N，pipeline + TTL） |
 | `AppConfig` / `RealTimeApp` | `common/Config` + `app/{StreamApp,BatchApp,VerifyApp}` |
 
+### 5.4 Data Agent 当前交接状态（**先读讨论记录再行动**）
+
+- **阶段**：架构 brainstorm；没有 Agent 工程、服务、图数据库 Schema 或 RAG 索引落地。
+- **必读**：`project_specs/data_agent/Data_Agent_Discussion.md`。
+- **当前工作约束**：
+  - 不做 Text2SQL；
+  - 不做重跑、修复、补数、回滚等执行动作；
+  - 不把 shadow execution 当作当前需求；
+  - “数据能不能信”的 Agent 输出只作参考，Gate/数据事实仍是权威；
+  - 事故与工作记录需要持久化，但必须与权威数据隔离；
+  - 历史根因和最终证据由人事后确认，Agent 不生成已裁决事实。
+- **候选技术方向（未冻结）**：LangGraph 负责工作流，Neo4j 负责血缘/事故关系，DuckDB 作为 Delta 的轻量只读探针，
+  Airflow/Delta/Spark/日志是事实源；PostgreSQL、Object Storage、RAG 和 GraphRAG 仍待后续裁剪。
+- **当前缺口**：具体数据范围、问题路由契约、事故记录模型、知识索引和 RAG 边界均未定。
+- **禁止误入**：不要因为讨论了 LangGraph/Neo4j/DuckDB 就默认开始建工程；下一步必须先由用户确认需求与架构范围。
+
 ## 6. 风险与坑
 
 1. ~~`Delta over S3A` 未验证~~ → **已消除（2026-10-16，14/14 通过）**：默认 committer 可用、multipart 生效、VACUUM 真删、流式 checkpoint 重启零重复。
@@ -232,28 +285,50 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
     排查顺序：`docker compose ps` → 容器内 `getent hosts seaweedfs` + `/dev/tcp` 探活。
 15. **批层必须按 `event_id` 去重**：Kafka 至少一次 + checkpoint 重置/重放会让 ODS 出现重复事件；
     DWD 按 `event_id` 去重；DIM 用 `row_number`/主键去重（效果等价，不去重会把 `like` 从 208 放大到 416）。
-16. **V-02 目前是"定义一致性"检查，不是"近似误差"**：流侧与批侧共用 `HeatMath`、同一事件时间锚点，
-    因此 rel_diff 恒为 0。等 Tier0 改成**状态化增量**（流侧只保留近似计数）后，rel_diff 才是真正的误差；
-    在那之前它仍然是有价值的回归检查（流/批口径一旦漂移就会报警）。
+16. **V-02 新基线已非零**：虽然流批共用 `HeatMath`，但当前 Tier0 快照形成后，乱序事件仍可能继续进入 ODS；
+    同锚点批侧重算会包含这些迟到事件，因此 10-29 出现 `p95≈7.69% / max≈97.69%`。Gate 按 G3 limitation 记录，
+    不能再用“必然为 0”描述当前运行事实。
 17. **交互类事件的 `channel` 靠 `batch_id` 反查曝光批次**：事件本身不带渠道；不补这一步，
     V-01 的交互类命中率会是 0（关注类则天然带 channel，所以"只有关注对得上"是个典型假象）。
 18. **留存 cohort 已修（P3.8）**：改为注册日/首见日 + `cohort_type`；修复前生成的 `dws/retention_daily` 需重跑 DWS 后再用。
 19. **`user_daily` 已加窗口过滤（P3.8）**：reg/obs 先过滤到 `sinceDt` 再写 `replaceWhere`；仍需运行验收确认谓词外行已消除。
+20. **Airflow 当前是 Docker 模式**：LocalExecutor + Postgres，scheduler 经 Docker socket 提交 Spark；两个 DAG 已暂停。
+    宿主 venv/SQLite 仅保留为备用调试路径。
+21. **Docker Hub 直连仍可能失败**：本次先通过可用镜像源拉取并重打标准标签，再用 compose 启动；
+    镜像源只是本机网络故障下的恢复路径，不写死到 compose。
+22. **生成器状态恢复从 P3.9 起生效**：`graph_state.log` / `interaction_state.log` 只记录新运行产生的变更；
+    首次启用前已有的历史互动与运行期关注无法自动补写，需要从 ODS 回放或重建数据。
+23. **P3.9 已重跑端到端**：10-29 Gate `pass_with_limitations`；旧 10-18 数字仅作历史基线。
+24. **当前工作树尚未提交**：P3.9 代码、Airflow 文件、Data Agent 讨论文档均在 dirty worktree 中。
+    新会话必须保留这些改动，禁止 `git reset --hard` / `checkout --`；先看 `git status` 和 `git diff`。
+25. **正式观测生成器 run 的清单 `stop_reason=null`**：这是修复前会话池收尾异常留下的现场；
+    修复后 `generator-fix-smoke` 已以 `target_event_days` 正常退出。数据语义未变，但重做全新基线时应重新生成主 run。
+26. **观测报告表行数是全历史当前表快照**：`observe_warehouse.scala` 报告每表总行数，并在有 `dt` 时给日期范围；
+    阅读时要结合 Gate 目标日，不能把总行数当单日指标。
+27. **`publish_final` 很严格**：除 semantic 字典外，本轮所有表因至少继承一条上游 limitation 而为 false；
+    Data Agent 必须解释限制，不能把 `pass_with_limitations` 简写成 pass。
 
-## 7. 下一步（唯一动作）
+## 7. 下一步（按执行边界）
 
-> **P3.1–P3.7 已完成**（三批验收：ODS/维表/明细、主题层/字典、Tier0/对账；数字见 §5.0）。
-> **P3.8 运行验收完成（2026-10-20）**：完整事件天 10-18 Gate 返回 `pass_with_limitations`（退出 0）；
-> V-01 1,252/1,252/0，V-02 1,947 行 rel_diff=0；10-19 为部分日，DR-3 记限制。
+> **P3.1–P3.9 已完成**（三批验收 + P3.8 编排 + P3.9 读契约加固；数字见 §5.0）。
+> **P3.9 新基线（2026-10-28）**：完整事件天 10-29 Gate 返回 `pass_with_limitations`（退出 0）；
+> V-01 521/521/0，V-02 4,538 行且因迟到数据呈非零差异；`partition_status` 28 张规范表全部逐表输出。
 > ① Gate 执行器（20 条注册表 + Gate v1 定值，写 manifest/report，退出码 0/1；G1 内部等待）；
 > ② `ops/run_manifest` + `ops/partition_status`（Delta）；
 > ③ Airflow `daily_batch` DAG（`DR → dim → dwd → IV → dws → semantic → CV/QL → verify → RC → partition_status`）；
 > ④ 周维护/人工批准的 VACUUM。
 >
-> **已知限制（验收记录）**：10-18 DR-3 历史日缺水位（G2）；ODS 有重放重复（DR-4-02 G2）；
-> 渠道占比日间变化 37.7pp（QL-2-02 G2）；10-18 无 Tier0 快照（RC-2-02 G3）；
-> `dim_user_injected.csv` 为累计文件，与 ODS 当前保留窗口的 distinct 注册用户数不一致（FX-2 G4 观察）。
-> **下一步：优先启动独立 data agent 工程**（不嵌数仓链路，只读字典/`partition_status`/manifest）。
+> **新基线限制**：10-29 DR-3 历史日差最后 55 秒水位（G2）；DR-4-01 历史样本不足（G2）；
+> retention registered cohort 样本不足（QL-2-01 G2）；V-02 迟到数据差异（RC-2-02 G3）；
+> 累计注入用户文件与当前 ODS 保留窗口不一致（FX-2 G4）。
+> **观测控制面已完成**：生成器 profile、运行时长、显式故障/坏数据、运行清单、容器镜像、
+> `observe_warehouse.sh` 和 `Full_Observation_Runbook.md` 均已落地。
+> **可执行下一步**：基于 `pass_with_limitations` 新基线继续 Data Agent 需求与架构收敛；
+> 若要形成“完全干净的单一生成器 run”，应在保留代码修复的前提下清空本轮测试数据后重跑。
+> **Data Agent 下一步**：只继续讨论需求、边界与架构，先读 §5.4 和
+> `project_specs/data_agent/Data_Agent_Discussion.md`；未获用户确认前不创建工程。
+> Airflow Docker 已运行，但两个 DAG 仍暂停。手工触发示例：
+> `{"dt":"2026-10-29","days":3}`。
 
 ⚠️ **协作约定不变：动手（改代码/跑任务）前先说一声；docker / 联网 / 沙箱外写入直接申请权限。**
 
@@ -299,22 +374,22 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
 | `project_specs/overall_spec/Project_Global_Spec.md` | ✅ 框架级规约（**最高权威**） |
 | `project_specs/overall_spec/Metric_Definitions.md` | ✅ 指标口径（v1.3 冻结；热度/负反馈/留存/E1/QL 总量基线已定） |
 | `project_specs/overall_spec/Metric_Implementation_Guide.md` | ✅ **指标实现说明（给"人"看）**：40 指标逐个"定位/怎么算/读哪列/坑"+ Gate v1 摘要；**设计门禁前先读这份** |
-| `project_specs/overall_spec/Gate_Grading_Scheme.md` | ✅ **Gate 分级方案 v3.1（权威）**：三层模型 + 六类 × 层级 + 20 条注册表 + **Gate v1 定值（运行校准）** + 前置实现条件 + 双产物/`partition_status` + data agent 读契约 |
-| `project_specs/overall_spec/Warehouse_Design.md` | ✅ T 层设计 |
-| `project_specs/overall_spec/Warehouse_Tables.md` | ✅ 逐表 DDL + Tier0 热度参数（v1.1：`dwd/click`、`limitations`、`cohort_type/is_mature`、ops 表） |
-| `project_specs/overall_spec/Deployment_And_Operations.md` | ✅ **交付主文档**：组件落点、启动/停止、runbook、配置、调试地图、P3.8 验收记录 |
-| `project_specs/mock_generator/Mock_Source_Spec.md` | ✅ 生成器唯一正本 |
+| `project_specs/overall_spec/Gate_Grading_Scheme.md` | ✅ **Gate 分级方案 v3.2（权威）**：三层模型 + 六类 × 层级 + 20 条注册表 + Gate v1 定值 + 双产物/逐表 `partition_status` |
+| `project_specs/overall_spec/Warehouse_Design.md` | ✅ T 层设计（v1.2；P3.9 已完成运行验收） |
+| `project_specs/overall_spec/Warehouse_Tables.md` | ✅ 逐表 DDL + Tier0 热度参数（v1.2：P3.9 语义查询字段、逐表信任与上游限制传播） |
+| `project_specs/overall_spec/Deployment_And_Operations.md` | ✅ **交付主文档**：组件落点、启动/停止、runbook、配置、调试地图、P3.8 与 P3.9 验收记录 |
+| `project_specs/overall_spec/Full_Observation_Runbook.md` | ✅ **逐步教学手册**：一次运行状态机、每阶段命令/预期状态/通过条件、profile、自动选日、整体观测、重置与排错 |
+| `project_specs/data_agent/Data_Agent_Discussion.md` | 🧭 Data Agent brainstorm 记录；非实现方案、非冻结契约 |
+| `project_specs/mock_generator/Mock_Source_Spec.md` | ✅ 生成器唯一正本（v0.11；契约 v2 + 运行计划 + chaos/坏数据配置 + 状态恢复） |
 | `project_specs/mock_generator/samples/`（`README.md` + `SCHEMA.md`） | ✅ 契约样本 + 逐文件字段字典（CSV 无表头） |
 | `project_specs/mock_generator/Generator_Refactor_Checklist.md` | ✅ 生成侧清单（A–F 全完成） |
 | `RealTime/docs/Pipeline_And_Architecture.md` | ✅ 生成器链路与架构说明 |
 | `RealTime/docs/Testing_And_Config_Guide.md` | ✅ 生成器测试与配置指南 |
 | `infra/README.md`、`infra/docker-compose.yml`、`infra/seaweedfs/s3.example.json` | ✅ 环境与凭证模板（实际 `s3.json` 不提交） |
-| `infra/airflow/dags/` | ✅ Airflow `crt_daily_batch` / `crt_weekly_vacuum`（P3.8） |
+| `infra/airflow/` | ✅ DAG + 本机启停脚本 + Docker Compose 备选；UI 上次已验证，当前进程需确认，DAG 暂停 |
 | `RealTime/**`（生成器源码）、`src/**`（数仓新实现，21 文件） | ✅ 代码事实 |
 | `项目解构与链路基线.md` | 🕰️ 历史快照（改造前，**旧代码已移出**） |
-| `project_specs/overall_spec/Gate_Grading_Scheme.md` | ✅ **Gate 分级方案（权威）** |
-| `project_specs/overall_spec/Metric_Implementation_Guide.md` | ✅ 指标实现说明（讲人话版） |
-| `README.md` | ✅ 入口页（2026-10-20 重写） |
+| `README.md` | ✅ 入口页（2026-10-28 同步 P3.9、Data Agent 讨论和 Airflow 状态） |
 | `project_specs/_deprecated/**` | ⛔ 弃用，勿引用 |
 | （已移出仓库）`my_resume.md` 等 | 🗑️ 在 `/tmp/crt_removed_2026-10-16/` |
 
@@ -354,3 +429,10 @@ DWS 11 表全部产出；V-01 **1,252/1,252/0**（6 类 × 3 天）、V-02 **1,9
 | 2026-10-20 | **README 重写**：旧版（250 用户 / SBT / 28 指标 / RedisBloom）已备份到 `/tmp/crt_readme_old_2026-10-20.md`；新版改为当前入口页，链接 `AGENTS`、`Deployment_And_Operations`、口径/Gate/表结构，并列出快速开始与已知限制 |
 | 2026-10-20 | **样本字段字典 + 真相层图**：新增 `samples/SCHEMA.md`（CSV 无表头、JSONL 逐字段、truth 字段）；README / Deployment / Warehouse_Design / Pipeline / Mock_Source_Spec 的链路图补上 `content_groundtruth → ods/groundtruth → V-01` 真相层旁路 |
 | 2026-10-20 | **Tier0 显式化**：Deployment/README/Warehouse_Design/Pipeline 图拆出 Tier0 的三条输出（F-07 热度、Q-01 作弊、U-04 在线）；补充 Tier0 输入只读 ODS、每微批重算 24h、Redis 非真值、作弊跨批去重等说明 |
+| 2026-10-21 | **Gate/Airflow 代码注释**：为 `GateRunner`、`GateApp`、`VerifyApp`、`AttributionVerify`、`HeatVerify`、`VacuumApp`、两个 DAG、`run_warehouse.sh` 增加行级中文注释；逻辑未改，Scala 编译与 Python AST 检查通过 |
+| 2026-10-24 | **Airflow 本机环境 + 交付文档对齐**：Airflow 2.10.5 venv/SQLite/SequentialExecutor 已运行在 `localhost:8080`，DAG 暂停；新增 `run_local.sh`/`stop_local.sh` 与 Docker Compose 备选；README/Deployment/AGENTS 更新实际状态；完善 `.gitignore`、`s3.example.json`、样本字段字典和真相层/Tier0 链路图 |
+| 2026-10-24 | **P3.9 Data Agent 读契约加固（代码）**：V-02 阈值和 7 日滚动实际生效；`partition_status` 改为逐表输出、全量替换单日状态并继承 ODS 限制；`contract_hash` 扩为 SHA-256 综合指纹；语义字典新增 `query_table/query_mode/read_only/contract_version`；生成器恢复互动/关注图状态并让 A1/A2 产真值；Tier0 计算前按 `event_id` 去重；线事件契约统一为 `v2`。数仓/生成器离线编译与状态冒烟通过，端到端 Gate 待重跑 |
+| 2026-10-24 | 新增 **Data Agent 讨论记录**：收口当前痛点、用户工作倾向、候选定位、功能/读写边界、链路角色和开放问题；明确为 brainstorm，不代表实现或冻结决策 |
+| 2026-10-27 | **Data Agent 讨论补充**：记录 LangGraph + Neo4j 之外的候选技术栈、DuckDB/Delta 的轻量探针定位、Neo4j 图/全文/向量检索边界、历史案例的纠错作用、“分诊”的问题路由含义，以及自动保存工作记录与人工确认分层；知识索引仍后置 |
+| 2026-10-28 | **交接文档收口**：修正生成器/Gate 文档版本，明确 P3.9 仍待端到端重跑；新增 §5.4 Data Agent 交接状态，记录“讨论已开始、工程未启动、禁止执行动作”；Data Agent 讨论文档增加新会话入口与持久化边界，README 增加讨论入口和当前限制 |
+| 2026-10-28 | **P3.9 新基线 + 全容器观测控制面**：恢复空 Docker 环境；生成器新增运行时长/事件天/最大事件数、随机种子、显式 chaos、坏数据/重复/丢弃/暂停、运行清单和容器 profile；修复 Tier0 空 ODS 等待、生成器会话池收尾、Gate QL 行读取；Docker Airflow 提交 Spark 已验证；新增整体观测脚本与教学手册；10-29 Gate `pass_with_limitations`，V-01 521/521/0，V-02 因迟到数据非零 |

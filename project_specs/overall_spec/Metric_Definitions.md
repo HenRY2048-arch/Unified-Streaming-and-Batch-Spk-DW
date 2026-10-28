@@ -183,6 +183,9 @@ heat(item, t) = Σ w_e × count_e + 0.02 × Σ min(dwell_sec, 30)
 ```
 
 > 给 agent 托底的**核心不是指标数量，而是这份字典 + 颗粒度稳定**——否则 agent 无法可靠地选表、算对分母、正确下钻。
+>
+> P3.9 起，落表字典额外提供 `query_table`、`query_mode`、`read_only`、`contract_version`：
+> agent 不需要从说明性文字猜测应该读 DWS、DWD、Redis 还是现算。
 
 ---
 

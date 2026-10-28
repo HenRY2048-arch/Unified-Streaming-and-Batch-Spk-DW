@@ -91,6 +91,52 @@ services:
       - "4040:4040"                       # Spark UI
     mem_limit: 3g
 
+  # ---- Mock Generator（按需启动；配置 profile 通过 CRT_GENERATOR_PROFILE 选择）----
+  # 启动：CRT_GENERATOR_PROFILE=observation-normal docker compose --profile generator up -d generator
+  # 停止：docker compose stop generator
+  generator:
+    image: crt-mock-generator:0.1.0
+    build:
+      context: ../RealTime
+      dockerfile: Dockerfile
+    container_name: crt-generator
+    profiles: ["tools", "generator"]
+    user: "0:0"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/opt/java/openjdk/bin/java"]
+    command:
+      - "-Dconfig.file=/opt/crt/generator/config/${CRT_GENERATOR_PROFILE:-observation-normal}.properties"
+      - "-Dmock.run.name=${CRT_RUN_NAME:-observation-run}"
+      - "-Dmock.run.duration.seconds=${CRT_RUN_DURATION_SECONDS:-}"
+      - "-Dmock.run.target.event.days=${CRT_TARGET_EVENT_DAYS:-}"
+      - "-Dmock.run.max.events=${CRT_MAX_EVENTS:-}"
+      - "-Dkafka.bootstrap.servers=kafka:19092"
+      - "-jar"
+      - "/opt/crt/generator/app.jar"
+    volumes:
+      - ../RealTime/data_files:/opt/crt/generator/data_files
+      - ../RealTime/config:/opt/crt/generator/config:ro
+    mem_limit: 1g
+
+  # ---- 常驻流作业（Kafka→ODS→Tier0）----
+  # 启动：CRT_STREAM_RESET=true docker compose --profile stream up -d stream
+  # 停止：docker compose stop stream && docker compose rm -f stream
+  stream:
+    image: apache/spark:3.5.3
+    container_name: crt-stream
+    profiles: ["tools", "stream"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/opt/crt/infra/scripts/stream_container.sh"]
+    volumes:
+      - ../RealTime:/opt/crt/RealTime
+      - ./:/opt/crt/infra
+      - ../target:/opt/crt/warehouse:ro
+    mem_limit: 3g
+
 volumes:
   kafka-data:
   seaweedfs-data:

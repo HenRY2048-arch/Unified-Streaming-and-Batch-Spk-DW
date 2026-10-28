@@ -36,12 +36,13 @@ public class MockGenerator {
 
     private final DataManager dataManager;
     private final DistributionService distribution;
-    private final Random random = new Random();
+    private final Random random = new Random(AppConfig.derivedSeed(3));
     private final AtomicLong globalCounter = new AtomicLong(0);
     private final Map<Long, SessionState> sessions = new HashMap<>();
     private final List<Long> activeUsers = new ArrayList<>();
     private final Map<Long, Integer> activePos = new HashMap<>();
-    private final InteractionState interactionState = new InteractionState();
+    private final InteractionState interactionState =
+            new InteractionState(AppConfig.INTERACTION_STATE_FILE);
     private final DateTimeFormatter isoFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSX");
     /** P1.6：上次注入新用户的事件时间；新用户计数（仅运行期统计）。 */
@@ -51,6 +52,12 @@ public class MockGenerator {
     private final long clockStartMs;
     /** 待"首次打开"的新用户（按 activationSimMs 排序）：注册后系统会给一次开机，保证 cohort 起点存在。 */
     private final PriorityQueue<User> pendingFirstOpen = new PriorityQueue<>(Comparator.comparingLong(User::getActivationSimMs));
+    private final AtomicLong injectedA1Bursts = new AtomicLong();
+    private final AtomicLong injectedA2Bursts = new AtomicLong();
+    private final AtomicLong injectedD1 = new AtomicLong();
+    private final AtomicLong injectedE1 = new AtomicLong();
+    private final AtomicLong injectedExtended = new AtomicLong();
+    private final AtomicLong injectedOutOfOrder = new AtomicLong();
 
     public MockGenerator(DataManager dataManager) {
         this.dataManager = dataManager;
@@ -62,8 +69,14 @@ public class MockGenerator {
     public GeneratedBatch generateNext() {
         long count = globalCounter.incrementAndGet();
 
-        if (count % 1000 == 0) return new GeneratedBatch(generateA1SpamBurst(), Collections.emptyList());
-        if (count % 1000 == 500) return new GeneratedBatch(generateA2CrazyBurst(), Collections.emptyList());
+        if (AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_A1_ENABLED
+                && AppConfig.CHAOS_A1_EVERY_N > 0
+                && count % AppConfig.CHAOS_A1_EVERY_N == 0) return generateA1SpamBurst();
+        if (AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_A2_ENABLED
+                && AppConfig.CHAOS_A2_EVERY_N > 0
+                && count % AppConfig.CHAOS_A2_EVERY_N == AppConfig.CHAOS_A2_EVERY_N / 2) {
+            return generateA2CrazyBurst();
+        }
 
         List<EventLog> events = new ArrayList<>(2);
         List<GroundTruth> truths = new ArrayList<>(1);
@@ -121,6 +134,16 @@ public class MockGenerator {
                         (SimClock.peek() - clockStartMs) / 3_600_000.0);
     }
 
+    /** 把生成器内部实际命中的异常次数写入运行清单。 */
+    public void recordInjections(RunManifest manifest) {
+        manifest.injected("chaos_a1_bursts", injectedA1Bursts.get());
+        manifest.injected("chaos_a2_bursts", injectedA2Bursts.get());
+        manifest.injected("chaos_d1_leave_events", injectedD1.get());
+        manifest.injected("chaos_e1_leave_events", injectedE1.get());
+        manifest.injected("chaos_extended_leave_events", injectedExtended.get());
+        manifest.injected("chaos_out_of_order_events", injectedOutOfOrder.get());
+    }
+
     // ---------------- 会话旅途 ----------------
 
     private void startSession(User user, SessionState st) {
@@ -166,10 +189,16 @@ public class MockGenerator {
     private void deactivate(long userId) {
         Integer idx = activePos.remove(userId);
         if (idx == null) return;
+        if (idx < 0 || idx >= activeUsers.size()) {
+            // 运行期并发收口可能已经移除该槽位；清理残留索引即可，不能扩大成生成器故障。
+            return;
+        }
         int last = activeUsers.size() - 1;
-        Long moved = activeUsers.get(last);
-        activeUsers.set(idx, moved);
-        activePos.put(moved, idx);
+        if (idx != last) {
+            Long moved = activeUsers.get(last);
+            activeUsers.set(idx, moved);
+            activePos.put(moved, idx);
+        }
         activeUsers.remove(last);
     }
 
@@ -419,36 +448,63 @@ public class MockGenerator {
 
     // ---------------- 异常注入（沿用） ----------------
 
-    private List<EventLog> generateA1SpamBurst() {
+    private GeneratedBatch generateA1SpamBurst() {
+        injectedA1Bursts.incrementAndGet();
         List<EventLog> events = new ArrayList<>();
+        List<GroundTruth> truths = new ArrayList<>();
         User user = dataManager.getRandomUser();
         startSessionIfNone(user);
         Item item = dataManager.getRandomItem();
         long baseTs = user.getEventTimeMs();
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < AppConfig.CHAOS_A1_COUNT; i++) {
             EventLog event = baseEvent(user, "comment");
             event.setItemId(item.getItemId());
             event.setCommentText(AppConfig.COMMENTS[random.nextInt(AppConfig.COMMENTS.length)]);
-            event.setTs(formatTs(baseTs + i * 1000L));
+            event.setTs(formatTs(baseTs + i * AppConfig.CHAOS_A1_SPACING_SECONDS * 1000L));
             events.add(event);
+            truths.add(truthForChaos(event, item, user, "comment"));
         }
-        return events;
+        return new GeneratedBatch(events, truths);
     }
 
-    private List<EventLog> generateA2CrazyBurst() {
+    private GeneratedBatch generateA2CrazyBurst() {
+        injectedA2Bursts.incrementAndGet();
         List<EventLog> events = new ArrayList<>();
+        List<GroundTruth> truths = new ArrayList<>();
         User user = dataManager.getRandomUser();
         startSessionIfNone(user);
         long baseTs = user.getEventTimeMs();
-        for (int i = 0; i < 15; i++) {
-            EventLog event = baseEvent(user, "like");
-            long iid = dataManager.getRandomItem().getItemId();
-            event.setItemId(iid);
-            event.setTs(formatTs(baseTs + random.nextInt(5000)));
-            events.add(event);
-            interactionState.markLike(user.getUserId(), iid);   // 异常注入同样落到状态里，保持一致
+        Map<Long, Item> chosen = new LinkedHashMap<>();
+        int guard = 0;
+        while (chosen.size() < AppConfig.CHAOS_A2_COUNT && guard++ < 10_000) {
+            Item item = dataManager.getRandomItem();
+            if (chosen.containsKey(item.getItemId())) continue;
+            if (interactionState.stanceOf(user.getUserId(), item.getItemId())
+                    != InteractionState.Stance.NONE) continue;
+            chosen.put(item.getItemId(), item);
         }
-        return events;
+        for (Item item : chosen.values()) {
+            EventLog event = baseEvent(user, "like");
+            event.setItemId(item.getItemId());
+            event.setTs(formatTs(baseTs + random.nextInt(Math.max(1, AppConfig.CHAOS_A2_WINDOW_MILLIS))));
+            events.add(event);
+            interactionState.markLike(user.getUserId(), item.getItemId());
+            truths.add(truthForChaos(event, item, user, "like"));
+        }
+        return new GeneratedBatch(events, truths);
+    }
+
+    /** 混沌事件的来源上下文为空，但事件本身仍是真实发生的转化，因此进入独立真值流。 */
+    private GroundTruth truthForChaos(EventLog event, Item item, User user, String type) {
+        GroundTruth t = new GroundTruth();
+        t.setTruthId("tru_" + UUID.randomUUID().toString().replace("-", ""));
+        t.setEventId(event.getEventId());
+        t.setUserId(user.getUserId());
+        t.setConversionType(type);
+        t.setItemId(item.getItemId());
+        t.setSessionId(user.getCurrentSessionId());
+        t.setTs(event.getTs());
+        return t;
     }
 
     // ---------------- 模型 ----------------
@@ -539,9 +595,27 @@ public class MockGenerator {
 
     private double sampleDwell(Item item) {
         double r = random.nextDouble();
-        if (r < 0.15) return 0.2 + random.nextDouble();
-        if (r < 0.20) return 0.1 + random.nextDouble() * 0.6;
-        if (r < 0.205) return 1800 + random.nextInt(1801);
+        double d1End = AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_D1_ENABLED
+                ? AppConfig.CHAOS_D1_RATE : 0.0;
+        if (r < d1End) {
+            injectedD1.incrementAndGet();
+            return AppConfig.CHAOS_D1_MIN_SECONDS
+                    + random.nextDouble() * (AppConfig.CHAOS_D1_MAX_SECONDS - AppConfig.CHAOS_D1_MIN_SECONDS);
+        }
+        double e1End = d1End + (AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_E1_ENABLED
+                ? AppConfig.CHAOS_E1_RATE : 0.0);
+        if (r < e1End) {
+            injectedE1.incrementAndGet();
+            return 0.1 + random.nextDouble() * Math.max(0.01, AppConfig.CHAOS_E1_MAX_SECONDS - 0.1);
+        }
+        double extendedEnd = e1End + (AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_EXTENDED_ENABLED
+                ? AppConfig.CHAOS_EXTENDED_RATE : 0.0);
+        if (r < extendedEnd) {
+            injectedExtended.incrementAndGet();
+            return AppConfig.CHAOS_EXTENDED_MIN_SECONDS
+                    + random.nextDouble()
+                    * (AppConfig.CHAOS_EXTENDED_MAX_SECONDS - AppConfig.CHAOS_EXTENDED_MIN_SECONDS);
+        }
         double speed = AppConfig.DWELL_CHARS_PER_SEC_MIN
                 + random.nextDouble() * (AppConfig.DWELL_CHARS_PER_SEC_MAX - AppConfig.DWELL_CHARS_PER_SEC_MIN);
         double dwell = AppConfig.DWELL_BASE_SECONDS + item.getContentLen() / speed;
@@ -588,7 +662,13 @@ public class MockGenerator {
 
         // 事件时间戳取自"该用户自己的时钟"（保证与 duration_sec 自洽）
         long ts = user.getEventTimeMs() > 0 ? user.getEventTimeMs() : SimClock.peek();
-        if (random.nextDouble() < 0.1) ts -= (30 + random.nextInt(61)) * 1000;   // B1 乱序
+        if (AppConfig.CHAOS_ENABLED && AppConfig.CHAOS_OUT_OF_ORDER_ENABLED
+                && random.nextDouble() < AppConfig.CHAOS_OUT_OF_ORDER_RATE) {
+            injectedOutOfOrder.incrementAndGet();
+            int span = Math.max(1,
+                    AppConfig.CHAOS_OUT_OF_ORDER_MAX_SECONDS - AppConfig.CHAOS_OUT_OF_ORDER_MIN_SECONDS + 1);
+            ts -= (AppConfig.CHAOS_OUT_OF_ORDER_MIN_SECONDS + random.nextInt(span)) * 1000L;
+        }
         event.setTs(formatTs(ts));
         return event;
     }

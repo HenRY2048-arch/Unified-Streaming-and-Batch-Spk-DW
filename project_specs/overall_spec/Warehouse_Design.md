@@ -2,14 +2,14 @@
 
 > 地位：数仓侧的**实现设计**。
 > 口径以 `Metric_Definitions.md` 为准；数据定义以 `project_specs/mock_generator/Mock_Source_Spec.md` 为准；框架级约束见 `Project_Global_Spec.md`。
-> 版本：v1.1 ｜ 2026-10-20 ｜ 状态：**P3.1–P3.8 已完成；10-18 Gate 为 pass_with_limitations**
+> 版本：v1.2 ｜ 2026-10-28 ｜ 状态：**P3.1–P3.9 已完成并形成新运行基线**
 
 ---
 
 ## 0. 定位与顺序
 
 - 上游：生成器（两个 Kafka topic：`content_events` / `content_groundtruth`）；下游：创作者看板（主）、**data agent**、推荐系统（**仅概念**）。
-- 顺序：数据源稳定 ✅ → 口径冻结 ✅ → 本文档 ✅ → 逐表落地 ✅ → **P3.1–P3.7 已实现并验收** → **P3.8 运行验收通过（带已知限制）**。
+- 顺序：数据源稳定 ✅ → 口径冻结 ✅ → 本文档 ✅ → 逐表落地 ✅ → **P3.1–P3.8 已验收** → **P3.9 读契约加固与新基线完成**。
 - 本文档**不含**指标口径（见 `Metric_Definitions.md`），只讲"怎么落"。
 
 ---
@@ -159,7 +159,7 @@ Tier0 当前**没有状态化增量**：每个微批重算最近 24h，换来与
   semantic/metric_dict/              指标字典（元数据表）
 
   ops/run_manifest/                  每次运行的 Gate 清单（Delta，按 run_id/dt）
-  ops/partition_status/              分区信任状态（Delta，dt × table → status/limitations）
+  ops/partition_status/              分区信任状态（Delta，dt × 规范表 → status/limitations/contract_hash）
   ops/reports/                       人读的 gate-report.md / 机器读的 gate-report.json
 ```
 
@@ -246,7 +246,7 @@ mvn -s RealTime/settings.xml -B clean package     # → target/crt-warehouse-0.1
 - `build.sbt` 保留给 IDE，但**版本与 pom 保持一致**，且不是正式构建入口。
 - 运行时示例见 `infra/README.md` §5.3（把 `--master`/`--jars`/`-i` 换成 `--class com.hub.app.StreamApp` 即可）。
 - 资源：WSL2 内存 7.58GB（`.wslconfig` 已写 11GB，待重启生效）；实测 Kafka ~683M、Redis ~7M；Spark 限 3G。
-- 调度：**Airflow**（`LocalExecutor + Postgres`，薄 DAG；流作业留在 DAG 外）。
+- 调度：**Airflow Docker `LocalExecutor + Postgres`**；scheduler 经 Docker socket 提交 Spark；流作业留在 DAG 外。
 
 ---
 
@@ -256,6 +256,7 @@ mvn -s RealTime/settings.xml -B clean package     # → target/crt-warehouse-0.1
 
 1. **调度器 ＝ Airflow**（2026-10-20）：`LocalExecutor + Postgres`，DAG 只调 `run_warehouse.sh` 与 Gate 入口；
    不引入 Celery/Redis broker；`StreamApp` 作为常驻服务留在 DAG 外，Airflow 只检查 ODS 新鲜度。
+   当前运行在 Docker `LocalExecutor + Postgres`；宿主 venv/SQLite 只保留为备用调试方式，详见 `infra/airflow/README.md`。
 2. **查询层 ＝ Spark SQL 为主**（零新增组件），**DuckDB 作为后续轻量查询 / agent 层**；
 3. **存储落点 ＝ S3（SeaweedFS）**，lake root ＝ `s3a://crt-lake/`，path-style（参数见 §5）；
 4. **`Delta over S3A` 冒烟通过**（14/14）：committer 用默认（`fs.s3a.committer.name=file`）、multipart 生效、
@@ -272,11 +273,13 @@ mvn -s RealTime/settings.xml -B clean package     # → target/crt-warehouse-0.1
 9. **P3.8 前置修正**：补 `dwd/click`、`enter_profile` 进 `dwd/relation`、V-01 加 `missing_cnt/recall`、
    Q-02 拆 `short_stay`/`long_content_short_stay`、字典加 `limitations`、U-03 cohort 与 `user_daily` 重跑口径
    （详见 `Gate_Grading_Scheme.md` §5.1）。
+10. **P3.9 新基线完成**（2026-10-28）：全容器工作负载、逐表信任、V-02 阈值执行、整体观测入口和教学手册落地；
+    10-29 Gate `pass_with_limitations`，V-01 521/521/0，V-02 因迟到事件非零。
 
 **待定**
 
-1. **P3.8 实现细节**：Airflow DAG 的具体节点拆分、Gate 策略文件的字段、`input_fingerprint` 的算法；
-2. 逐表字段的最终列名（已按实现回写 `Warehouse_Tables.md`，P3.8 前置修正后仍可能微调）。
+1. **V-02 未来门槛**：Tier0 改为状态化增量后，再根据实测分布校准 `p95/max`。
+2. 逐表字段的最终列名（已按实现回写 `Warehouse_Tables.md`，后续只在语义需要时调整）。
 
 ---
 
@@ -292,3 +295,5 @@ mvn -s RealTime/settings.xml -B clean package     # → target/crt-warehouse-0.1
 | 2026-10-20 | 对齐实现：§3.4 换成**实际 18 个类**（含 `HeatMath`、`Tier0`、`RedisSink`、三入口）；§6 补"P3.1–P3.7 已落地"，待定收敛为 **P3.8 编排 + Gate 四待定 + 三语义口径 + 列名微调** |
 | 2026-10-20 | **P3.8 设计定稿**：调度器改 **Airflow（LocalExecutor + Postgres）**；目录契约补 `dwd/click`、`ops/run_manifest`、`ops/partition_status`、`ops/reports`；§6 写入 P3.8 最小闭环、Gate v1 冻结与前置修正（`dwd/click`、R-06、V-01 召回、Q-02 拆分、字典 `limitations`） |
 | 2026-10-20 | **P3.8 运行验收**：10-18 Gate `pass_with_limitations`（DR-3 历史日缺水位、ODS 重放、渠道占比、无 Tier0 快照为限制）；V-01 1,252/1,252/0，V-02 1,947 行 rel0；验收记录与调试手册见 `Deployment_And_Operations.md` |
+| 2026-10-24 | **P3.9 Data Agent 读契约加固（代码）**：逐表 `partition_status` + 上游限制传播；综合 SHA-256 `contract_hash`；语义字典查询字段；Gate 阈值与 7 日窗口真实执行；生成器状态恢复；Tier0 ODS 去重。离线编译/测试通过，完整 Gate 待重跑 |
+| 2026-10-28 | **P3.9 新基线 + 全容器运行**：Generator/Spark/Airflow 容器化；Tier0 等待空 ODS、生成器运行计划/故障注入、观测入口和教学手册落地；10-29 Gate `pass_with_limitations`，V-02 因迟到事件非零 |

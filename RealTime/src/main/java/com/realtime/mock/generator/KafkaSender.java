@@ -52,6 +52,11 @@ public class KafkaSender {
         sendJson(String.valueOf(truth.getUserId()), toJson(truth));
     }
 
+    /** 发送已经序列化（或刻意损坏）的消息，供观测故障注入使用。 */
+    public void sendRaw(String key, String json) {
+        sendJson(key, json);
+    }
+
     private void sendJson(String key, String json) {
         if (json == null) return;
         producer.send(new ProducerRecord<>(topic, key, json));

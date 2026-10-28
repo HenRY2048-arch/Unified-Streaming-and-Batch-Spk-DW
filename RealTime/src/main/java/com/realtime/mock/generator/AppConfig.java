@@ -4,6 +4,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.Random;
 
 /**
  * 配置中心（P1.0 外置）。
@@ -26,6 +27,11 @@ public class AppConfig {
     public static final String FOLLOW_SEED_CSV = DATA_DIR + "/dim_follow_seed.csv";
     /** 运行期注入的新用户（append；重启靠它避免重复发 id）。 */
     public static final String USER_INJECTED_CSV = get("mock.user.injected.file", DATA_DIR + "/dim_user_injected.csv");
+    /** 运行期关注图增删日志；重启时在种子图之上重放，避免历史 follow/unfollow 丢失。 */
+    public static final String GRAPH_STATE_FILE = get("mock.graph.state.file", DATA_DIR + "/graph_state.log");
+    /** 状态型互动日志；重启时恢复 like/dislike/fav，保证“一次性”语义跨进程成立。 */
+    public static final String INTERACTION_STATE_FILE =
+            get("mock.interaction.state.file", DATA_DIR + "/interaction_state.log");
 
     // ---- 模拟时钟（P1.6 / 契约 v2）----
     /** 会话内"思考时间"（事件秒），用于推进模拟时钟。 */
@@ -81,7 +87,7 @@ public class AppConfig {
             Double.parseDouble(get("mock.graph.cross.cluster.ratio", "0.08"));
 
     // ---- 事件契约（P1.2）----
-    public static final String SCHEMA_VERSION = get("mock.schema.version", "v1");
+    public static final String SCHEMA_VERSION = get("mock.schema.version", "v2");
     public static final int BATCH_SIZE = Integer.parseInt(get("mock.batch.size", "8"));
     public static final boolean EMIT_EXPOSURE = Boolean.parseBoolean(get("mock.emit.exposure", "true"));
     public static final boolean BATCH_INCLUDE_RANK_SCORE = Boolean.parseBoolean(get("mock.batch.rank.score", "true"));
@@ -129,6 +135,92 @@ public class AppConfig {
     // ---- 归因真值（P1.4）----
     public static final String TRUTH_TOPIC = get("mock.truth.topic", "content_groundtruth");
 
+    // ---- 运行计划（观测基线）----
+    /** 本次运行的逻辑名称，用于日志与运行清单。 */
+    public static final String RUN_NAME = get("mock.run.name", "default");
+    /** 真实墙钟运行时长；0 = 不按墙钟停止。 */
+    public static final long RUN_DURATION_SECONDS = Long.parseLong(get("mock.run.duration.seconds", "0"));
+    /** 模拟事件时间目标天数；0 = 不按事件天停止。 */
+    public static final double RUN_TARGET_EVENT_DAYS =
+            Double.parseDouble(get("mock.run.target.event.days", "0"));
+    /** 本次运行最多生成的主事件数；0 = 不按事件数停止。 */
+    public static final long RUN_MAX_EVENTS = Long.parseLong(get("mock.run.max.events", "0"));
+    /** 随机种子；种子文件已存在时，数据分布仍由既有种子文件决定。 */
+    public static final long RANDOM_SEED = Long.parseLong(get("mock.random.seed", "20261028"));
+    /** 运行清单目录；每次运行写一个 JSON 文件。 */
+    public static final String RUN_MANIFEST_DIR = get("mock.run.manifest.dir", DATA_DIR + "/run_manifest");
+
+    // ---- 行为异常 / 乱序（chaos）----
+    public static final boolean CHAOS_ENABLED = Boolean.parseBoolean(get("mock.chaos.enabled", "true"));
+    public static final boolean CHAOS_A1_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.a1.enabled", "true"));
+    public static final long CHAOS_A1_EVERY_N =
+            Long.parseLong(get("mock.chaos.a1.every.n", "1000"));
+    public static final int CHAOS_A1_COUNT =
+            Integer.parseInt(get("mock.chaos.a1.count", "5"));
+    public static final int CHAOS_A1_SPACING_SECONDS =
+            Integer.parseInt(get("mock.chaos.a1.spacing.seconds", "1"));
+    public static final boolean CHAOS_A2_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.a2.enabled", "true"));
+    public static final long CHAOS_A2_EVERY_N =
+            Long.parseLong(get("mock.chaos.a2.every.n", "1000"));
+    public static final int CHAOS_A2_COUNT =
+            Integer.parseInt(get("mock.chaos.a2.count", "15"));
+    public static final int CHAOS_A2_WINDOW_MILLIS =
+            Integer.parseInt(get("mock.chaos.a2.window.millis", "5000"));
+    public static final boolean CHAOS_D1_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.d1.enabled", "true"));
+    public static final double CHAOS_D1_RATE =
+            Double.parseDouble(get("mock.chaos.d1.rate", "0.15"));
+    public static final double CHAOS_D1_MIN_SECONDS =
+            Double.parseDouble(get("mock.chaos.d1.min.seconds", "0.2"));
+    public static final double CHAOS_D1_MAX_SECONDS =
+            Double.parseDouble(get("mock.chaos.d1.max.seconds", "1.2"));
+    public static final boolean CHAOS_E1_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.e1.enabled", "true"));
+    public static final double CHAOS_E1_RATE =
+            Double.parseDouble(get("mock.chaos.e1.rate", "0.05"));
+    public static final double CHAOS_E1_MAX_SECONDS =
+            Double.parseDouble(get("mock.chaos.e1.max.seconds", "0.8"));
+    public static final boolean CHAOS_EXTENDED_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.extended.enabled", "true"));
+    public static final double CHAOS_EXTENDED_RATE =
+            Double.parseDouble(get("mock.chaos.extended.rate", "0.005"));
+    public static final double CHAOS_EXTENDED_MIN_SECONDS =
+            Double.parseDouble(get("mock.chaos.extended.min.seconds", "1800"));
+    public static final double CHAOS_EXTENDED_MAX_SECONDS =
+            Double.parseDouble(get("mock.chaos.extended.max.seconds", "3600"));
+    public static final boolean CHAOS_OUT_OF_ORDER_ENABLED =
+            Boolean.parseBoolean(get("mock.chaos.out_of_order.enabled", "true"));
+    public static final double CHAOS_OUT_OF_ORDER_RATE =
+            Double.parseDouble(get("mock.chaos.out_of_order.rate", "0.10"));
+    public static final int CHAOS_OUT_OF_ORDER_MIN_SECONDS =
+            Integer.parseInt(get("mock.chaos.out_of_order.min.seconds", "30"));
+    public static final int CHAOS_OUT_OF_ORDER_MAX_SECONDS =
+            Integer.parseInt(get("mock.chaos.out_of_order.max.seconds", "90"));
+
+    // ---- 数据缺陷 / 传输故障注入 ----
+    /** 主开关；关闭时以下所有缺陷注入均不生效。 */
+    public static final boolean DATA_DEFECT_ENABLED =
+            Boolean.parseBoolean(get("mock.data_defect.enabled", "false"));
+    /** 事件级缺陷比例；命中后按 modes 中的一个模式处理。 */
+    public static final double DATA_DEFECT_RATE =
+            Double.parseDouble(get("mock.data_defect.rate", "0"));
+    /** 逗号分隔：invalid_json, missing_field, invalid_enum, wrong_type。 */
+    public static final String DATA_DEFECT_MODES =
+            get("mock.data_defect.modes", "invalid_json,missing_field,invalid_enum,wrong_type");
+    /** Kafka 至少一次语义的重复故障。 */
+    public static final double DATA_DEFECT_DUPLICATE_RATE =
+            Double.parseDouble(get("mock.data_defect.duplicate.rate", "0"));
+    /** 模拟上游丢失事件。 */
+    public static final double DATA_DEFECT_DROP_RATE =
+            Double.parseDouble(get("mock.data_defect.drop.rate", "0"));
+    /** 运行开始后暂停发送的墙钟秒数；0 = 不暂停。 */
+    public static final long FAULT_PAUSE_AFTER_SECONDS =
+            Long.parseLong(get("mock.fault.pause.after.seconds", "0"));
+    public static final long FAULT_PAUSE_DURATION_SECONDS =
+            Long.parseLong(get("mock.fault.pause.duration.seconds", "0"));
+
     // Categories and Tags
     public static final String[][] CATEGORY_TAGS = {
         {"时尚美妆", "美妆", "穿搭"},
@@ -142,6 +234,13 @@ public class AppConfig {
     public static final String[] COMMENTS = {"写得真好", "学到了", "干货满满", "绝绝子", "收藏了", "踩坑了", "不太适合我"};
     public static final String[] DM_CONTENTS = {"怎么买？", "链接有吗？", "多少钱？", "求私信资料"};
 
+    /** 使用同一主种子派生组件随机种子，便于复现实验。 */
+    public static long derivedSeed(long stream) {
+        long mixed = RANDOM_SEED ^ (stream * 0x9E3779B97F4A7C15L);
+        Random random = new Random(mixed);
+        return random.nextLong();
+    }
+
     private static String get(String key, String defaultValue) {
         String sys = System.getProperty(key);          // 允许 -Dkey=value 单项覆盖（便于切压力/策略测试）
         if (sys != null && !sys.trim().isEmpty()) return sys.trim();
@@ -151,6 +250,17 @@ public class AppConfig {
 
     private static Properties load() {
         Properties p = new Properties();
+
+        // classpath 是默认层，外部 profile 只覆盖其中显式声明的键。
+        try (InputStream in = AppConfig.class.getClassLoader().getResourceAsStream("config.properties")) {
+            if (in != null) {
+                p.load(in);
+                System.out.println("[AppConfig] loaded classpath:config.properties");
+            }
+        } catch (IOException e) {
+            System.err.println("[AppConfig] classpath config.properties not loaded ("
+                    + e.getMessage() + "), using defaults");
+        }
 
         String external = System.getProperty("config.file");
         if (external != null && !external.trim().isEmpty()) {
@@ -162,16 +272,6 @@ public class AppConfig {
                 System.err.println("[AppConfig] cannot read config.file=" + external
                         + " (" + e.getMessage() + "), fallback to classpath/defaults");
             }
-        }
-
-        try (InputStream in = AppConfig.class.getClassLoader().getResourceAsStream("config.properties")) {
-            if (in != null) {
-                p.load(in);
-                System.out.println("[AppConfig] loaded classpath:config.properties");
-            }
-        } catch (IOException e) {
-            System.err.println("[AppConfig] classpath config.properties not loaded ("
-                    + e.getMessage() + "), using defaults");
         }
 
         return p;

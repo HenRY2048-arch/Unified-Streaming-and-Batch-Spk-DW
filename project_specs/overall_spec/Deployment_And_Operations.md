@@ -1,19 +1,21 @@
 # 整体链路搭建、运行与调试手册
 
 > 地位：项目的**部署 / 运行 / 排错**主文档。口径以 `Metric_Definitions.md` 为准，门禁以 `Gate_Grading_Scheme.md` 为准，表结构以 `Warehouse_Tables.md` 为准。
-> 版本：v1（2026-10-20）｜状态：**P3.8 运行验收完成（10-18 为 pass_with_limitations）**
+> 版本：v1.2（2026-10-28）｜状态：**P3.9 已完成新端到端验收；10-29 Gate 为 pass_with_limitations**
 
 ---
 
 ## 0. 一页图
 
 ```
-[宿主 WSL2]
-  Mock Generator (Java)
-    ├─ content_events ─────────────► localhost:9092 ─┐
-    └─ content_groundtruth ───────► localhost:9092  ─┤
-  Maven/scalac ──► target/crt-warehouse-0.1.0.jar    │
-  Airflow DAG 源码（infra/airflow/dags）              │
+[宿主 WSL2：命令入口]
+  bootstrap_runtime.sh / run_warehouse.sh / observe_warehouse.sh
+  Maven 构建产物 → target/crt-warehouse-0.1.0.jar
+
+[Docker]
+  Mock Generator 容器 ──► kafka:19092
+  Airflow/PG 容器 ──► Docker socket ──► Spark 一次性容器
+                                                     │
                                                      ▼
 [Docker: crt-kafka] ──► [Spark: 流①] ──► ods/events（证据层）
         │                    │
@@ -67,6 +69,9 @@
 | 生成器种子/状态 | `RealTime/data_files/` | 种子 CSV、`.sim_clock`、`dim_user_injected.csv` |
 | 启动脚本 | `infra/scripts/run_warehouse.sh`、`run_shell.sh` | 统一 jar 列表、驱动内存、Spark 容器入口 |
 | Airflow DAG | `infra/airflow/dags/` | `crt_daily_batch.py`、`crt_weekly_vacuum.py` |
+| Airflow venv | `.airflow-venv/`（gitignore） | Python 3.11 + Airflow 2.10.5 |
+| Airflow 运行状态 | Docker volumes + `infra/airflow/logs/` | Postgres 元数据库、日志、Web UI/scheduler 状态 |
+| Airflow 启停 | `infra/airflow/run_local.sh`、`stop_local.sh` | 本机 Web UI `8080` / scheduler |
 | 环境编排 | `infra/docker-compose.yml` | Kafka / Redis / SeaweedFS / 按需 Spark |
 
 ### 1.2 Docker 容器
@@ -168,7 +173,8 @@ mvn -s settings.xml -B clean package
 java -jar target/mock-generator-1.0-SNAPSHOT.jar
 ```
 
-生成器是宿主进程，配置 `RealTime/src/main/resources/config.properties`；`-Dkey=value` 可覆盖。它会持续写 `content_events` 与 `content_groundtruth`。
+生成器默认以容器运行，配置 `RealTime/src/main/resources/config.properties`；profile 通过
+`CRT_GENERATOR_PROFILE` 选择，`-Dkey=value` 仍可覆盖。它会持续写 `content_events` 与 `content_groundtruth`。
 
 ### 2.4 起流作业
 
@@ -205,12 +211,15 @@ infra/scripts/run_warehouse.sh com.hub.app.GateApp --stage all --dt 2026-10-18 -
 infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch5.scala
 ```
 
-### 3.2 Airflow（源码已就绪，运行环境待安装）
+### 3.2 Airflow（Docker LocalExecutor + Postgres）
 
 - DAG：`infra/airflow/dags/crt_daily_batch.py`，链路 `DR → dim → dwd → IV → dws → semantic → CV/QL → verify → RC → partition_status`。
 - 维护：`crt_weekly_vacuum.py`，默认 `schedule=None`，人工触发。
 - Airflow worker 需要能执行 `infra/scripts/run_warehouse.sh`；默认项目根由 `CRT_PROJECT_ROOT` 指定。
-- 当前**没有部署 Airflow**；DAG 语法已通过 Python AST 检查，未做真实调度验收。
+- 当前使用 Docker `LocalExecutor + Postgres`，Web UI 为 `http://localhost:8080`，账号 `admin/admin`。
+- `docker compose -f infra/airflow/docker-compose.yml up -d` 启动；两个 DAG 当前暂停，避免自动触发 Spark。
+- Airflow 容器通过 Docker socket 提交一次性 Spark 容器；已从 scheduler 容器内实际执行 `run_warehouse.sh` 验证。
+- 宿主 venv + SQLite 的 `run_local.sh` 保留为备用调试方式。
 
 ### 3.3 VACUUM（不要放进每日主链）
 
@@ -306,6 +315,9 @@ infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch5.scala   # P3.
 
 ## 7. 本次验收记录（2026-10-20）
 
+> 运行环境补充（2026-10-21 起）：Airflow 2.10.5 本机 venv 的上次验收入口为 `http://localhost:8080`，
+> 使用 SQLite + SequentialExecutor；两个 DAG 已暂停，避免自动触发 Spark。
+
 ### 7.1 前置
 
 - `crt-kafka`、`crt-redis` 已在运行；`crt-s3` 当时未运行，已启动 `seaweedfs`。
@@ -361,18 +373,35 @@ infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch5.scala
 - `ops/partition_status`：26 行；10-18/10-19 的 `dt × table` 状态可查。
 - 10-19 是部分日：DR-3 记限制，不应把当天当完整日报。
 
+### 7.7 P3.9 新基线（2026-10-28）
+
+- ODS：13,807 事件 / 1,069 真值，覆盖 10-28～10-30；
+- DIM：user 1,133 / item 590 / edge 10,092；
+- DWD：exposure 32,293 / click 3,781 / consume 2,872 / interaction 977 /
+  relation 228 / publish 90 / session 1,610；
+- DWS 11 表与 semantic 40 行全部产出；
+- 完整事件天 10-29 的 Gate 为 `pass_with_limitations`，20 条结果全部写入；
+- V-01：521/521/0，精确率、召回率均为 1；
+- V-02：4,538 行，`p50=0 / p95≈7.69% / max≈97.69%`，原因是快照生成后仍到达迟到事件；
+- `ops/partition_status`：28 张规范表；仅 `semantic/metric_dict` 为 `publish_final=true`；
+- 统一观测 JSON：`s3a://crt-lake/ops/reports/observations/`。
+
+详细操作见 `Full_Observation_Runbook.md`。
+
 ---
 
 ## 8. 已知限制与下一步
 
-1. **Airflow 未部署**：只有 DAG 源码；未做真实调度、重试、告警验收。
-2. **10-18 无 Tier0 快照**：V-02 只能看 10-19/20；历史日补快照需要单独回填工具。
+1. **Airflow 容器化已验证执行边界**：Docker `LocalExecutor + Postgres` 已运行，scheduler 可提交 Spark；尚未做人工 DAG 全链路重试/告警演练。
+2. **V-02 新基线非零**：10-29 的迟到事件导致流快照后批侧继续补齐，`p50=0 / p95≈7.69% / max≈97.69%`，Gate 记 G3 limitation。
 3. **ODS 有重放重复**：DWD 已按 `event_id` 去重；ODS 的 raw 行数不能直接当曝光口径。
 4. **D1/E1 区间重叠**：15%/5% 是注入参数，不是可分别观测的指标；QL 用 20%/14% 总量。
 5. **渠道占比波动大**：QL-2-02 当前 5pp/10pp 偏紧，10-18 实测 37.7pp，按 G2 limitation；等 7 日基线成熟再校准。
 6. **FX-2**：`dim_user_injected.csv` 是累计运行态文件，Kafka/ODS 有保留窗口，不能要求每天绝对相等；保持 G4 观察。
 7. **VACUUM 未执行**：本次验收只读；物理回收等人工确认。
 8. **data agent 未开始**：本轮只交付字典、`partition_status`、manifest、`contract_hash` 四个读契约。
+9. **P3.9 已重跑**：Batch → Verify → Gate 完成；Gate 整体为 `pass_with_limitations`，`partition_status` 28 行逐表状态已生成。
+10. **生成器状态日志从升级点起生效**：`graph_state.log` / `interaction_state.log` 无法自动补出升级前的历史运行状态。
 
 ---
 
@@ -382,8 +411,8 @@ agent 只读：
 
 | 读什么 | 回答什么 |
 |---|---|
-| `semantic/metric_dict` | 指标、口径、粒度、`nature`、`limitations` |
-| `ops/partition_status` | 这一天这张表能不能用、有什么限制 |
+| `semantic/metric_dict` | 指标、口径、粒度、`nature`、`limitations`、`query_table/query_mode/read_only/contract_version` |
+| `ops/partition_status` | 这一天这张规范表能不能用、有什么限制；无专用门禁时继承上游并显式标注 |
 | `ops/run_manifest` + `gate-report.json` | 为什么是这个结论、哪条门给的、哪版策略 |
 | `contract_hash` / `policy_version` | 口径和策略是否变过 |
 
@@ -396,3 +425,6 @@ agent 只读：
 | 日期 | 变更 |
 |---|---|
 | 2026-10-20 | 首版：组件落点、启动顺序、端到端 runbook、配置优先级、调试地图、P3.8 验收记录与已知限制 |
+| 2026-10-24 | 补 Airflow 本机 venv 启停、SQLite/SequentialExecutor 运行模式、Docker Compose 备选和 DAG 暂停状态；同步 README/AGENTS 当前事实 |
+| 2026-10-24 | **P3.9 代码加固**：Gate 阈值/7 日滚动、逐表信任传播、综合 contract hash、结构化报告、语义查询字段、生成器状态恢复、Tier0 去重；代码与离线测试通过，运行验收待重跑 |
+| 2026-10-28 | **P3.9 新基线 + 全容器观测**：恢复空 Docker 环境；生成器增加运行计划/坏数据故障/运行清单并容器化；Spark 空 ODS 等待、会话池收尾和 Gate QL 行读取修复；Docker Airflow 提交 Spark 验证；新增整体观测脚本与教学手册；10-29 Gate 为 pass_with_limitations |

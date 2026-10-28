@@ -33,7 +33,7 @@
 
 | Listener | 地址 | 谁用 |
 |---|---|---|
-| `EXTERNAL` | `localhost:9092` | **WSL2 宿主进程**（生成器） |
+| `EXTERNAL` | `localhost:9092` | WSL2 宿主工具；生成器容器使用 INTERNAL |
 | `INTERNAL` | `kafka:19092` | **将来的容器**（如容器化的 Spark） |
 
 > 生成器配置 **`bootstrap.servers = localhost:9092`**。
@@ -146,12 +146,35 @@ mvn -s RealTime/settings.xml -B clean package      # → target/crt-warehouse-0.
 # 2) 前提：三个中间件都在跑（曾因 crt-s3 静默停摆，表现为"写 S3 卡住"）
 docker compose -f infra/docker-compose.yml ps
 
+# 2.1) 从空环境恢复 topic 和 lake bucket
+infra/scripts/bootstrap_runtime.sh
+
 # 3) 三个入口（脚本已封装 jar 列表、驱动内存、topic 覆盖）
 infra/scripts/run_warehouse.sh com.hub.app.StreamApp --reset     # 常驻：Kafka→ODS + ODS→Tier0
 infra/scripts/run_warehouse.sh com.hub.app.BatchApp --step all --days 2
 infra/scripts/run_warehouse.sh com.hub.app.VerifyApp --days 3
 infra/scripts/run_warehouse.sh com.hub.app.GateApp --stage all --days 2
 infra/scripts/run_warehouse.sh com.hub.app.VacuumApp --hours 168   # 周维护/人工触发
+
+# 生成器容器（profile: observation-normal / observation-incidents / observation-peak）
+docker compose -f infra/docker-compose.yml --profile generator build generator
+CRT_GENERATOR_PROFILE=observation-normal \
+  docker compose -f infra/docker-compose.yml --profile generator up generator
+
+# 整体观测（容器/Kafka/Redis/生成器清单/Delta/Verify/Gate）
+CRT_GENERATOR_RUN_NAME=observation-normal infra/scripts/observe_warehouse.sh
+
+# 或：一次完成构建、生成、批处理、对账、Gate、观测
+PROFILE=observation-normal RUN_NAME=obs-$(date +%Y%m%d-%H%M%S) \
+  DAYS=3 TARGET_DT=auto infra/scripts/run_observation.sh
+
+# 生成器无 Kafka 的状态恢复冒烟（P3.9）
+cd RealTime
+mvn -o -s settings.xml -B test-compile
+state_dir="$(mktemp -d /tmp/crt-state-smoke.XXXXXX)"
+java -Dcrt.test.data.dir="$state_dir" -Ddata.dir="$state_dir" \
+  -Dcrt.seed.source=data_files \
+  -cp target/classes:target/test-classes com.realtime.mock.generator.StatePersistenceSmoke
 
 # 4) 验收脚本（在容器里跑 spark-shell）
 infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch3.scala
@@ -162,7 +185,8 @@ infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch3.scala
 - `StreamApp --reset` 只清**本作业自己的** checkpoint；若上次是 `kill` 掉的，先确认没有残留的 `crt-spark-run-*` 容器。
 - 批作业与对账都是一次性进程；批作业按 `--days N` 重算"最近 N 个事件天"，起点由 ODS 的最大日期推出（不是机器当天）。
 - 运行期依赖全在 `infra/jars/`（宿主 `mvn` 预下载、容器只读挂载）；版本必须与镜像配对（见 §5.2）。
-- Airflow DAG 在 `infra/airflow/dags/`（`crt_daily_batch` / `crt_weekly_vacuum`），部署假设见 `infra/airflow/README.md`。
+- Airflow DAG 在 `infra/airflow/dags/`；当前为 Docker LocalExecutor + Postgres，UI 在 `localhost:8080`，
+  启动/停止见 `infra/airflow/README.md`。宿主 venv 保留为备用。
 
 ## 6. 变更记录
 
@@ -175,3 +199,4 @@ infra/scripts/run_shell.sh /opt/crt/infra/scripts/verify_p3_batch3.scala
 | 2026-10-16 | **Delta over S3A 冒烟通过（14/14）**：新增 §5（依赖获取 / 版本配对 / 冒烟脚本与结果）；Spark 镜像 3.5.1 → **3.5.3** |
 | 2026-10-20 | 新增 §5.5 **数仓构建与运行**（Maven 薄 jar、三个入口、验收脚本、`crt-s3` 必须在线）；与 `AGENTS.md` §5.0 对齐 |
 | 2026-10-20 | **P3.8 运行验收**：补 `GateApp`/`VacuumApp` 命令、Airflow DAG 指针；完整搭建/调试见 `Deployment_And_Operations.md` |
+| 2026-10-28 | **全容器恢复与观测**：Docker 镜像/数据卷从空环境恢复；新增 `bootstrap_runtime.sh`；生成器镜像和 profile；Airflow Docker LocalExecutor+Postgres 实跑并验证 scheduler→Spark；新增 `observe_warehouse.sh` |

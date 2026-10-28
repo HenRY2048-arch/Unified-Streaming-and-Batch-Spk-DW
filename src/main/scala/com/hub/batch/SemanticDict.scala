@@ -1,6 +1,7 @@
 package com.hub.batch
 
 import com.hub.common.{DeltaIO, Lake}
+import java.nio.charset.StandardCharsets
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SparkSession}
 
@@ -66,7 +67,7 @@ object SemanticDict {
     M("R-05", "粉丝活跃度", "新粉在关注后 7 天内的互动率", "有关注后互动的粉丝", "当日新粉",
       "dt × author", "author", 2, "dws/author_daily", true, "—", "业务"),
     M("R-06", "进主页量", "路径中间步", "count(enter_profile)", "—",
-      "dt × author", "author", 2, "ods/events", true, "—", "业务"),
+      "dt × author", "author", 2, "dwd/relation", true, "—", "业务"),
     M("A-01", "作者曝光/点击/互动", "按作者聚合", "对应计数", "—",
       "dt × author", "author,category", 2, "dws/author_daily", true, "—", "业务"),
     M("A-02", "作者涨粉/掉粉", "按作者聚合（净额）", "follow/unfollow", "—",
@@ -92,7 +93,7 @@ object SemanticDict {
     M("U-03", "留存/回访", "registered 用注册日、seed 用首见日；1/3/7 日回访率", "retained_cnt", "cohort_size",
       "dt × cohort_dt × cohort_type", "cohort,cohort_type", 2, "dws/retention_daily", true, "—", "业务"),
     M("U-04", "在线活跃", "近 N 分钟有会话的用户数", "count(distinct user_id)", "—",
-      "滚动 N 分钟", "—", 0, "stream 状态", true, "批侧重算", "业务"),
+      "滚动 N 分钟", "—", 0, "redis/crt:online", true, "批侧重算", "业务"),
     M("Q-01", "作弊判定(A1/A2)", "A1 五连评 / A2 五秒十五赞", "判定为作弊的事件", "—",
       "事件级", "user,item", 0, "tier0/cheat_events", true, "注入器", "风控"),
     M("Q-02", "秒退/短停留/长内容短停留/极长驻留", "各类计数 ÷ consume_cnt；short_stay 对 5% 基线", "异常计数", "consume_cnt",
@@ -122,6 +123,49 @@ object SemanticDict {
     case _ => "—"
   }
 
+  /**
+   * Data agent 的程序化读取入口。
+   *
+   * `source_fields` 原本同时承载“表/字段/概念来源”，不适合机器判断；
+   * 这里把它拆成明确的表名与访问模式，同时保持旧列兼容。
+   */
+  private def queryTableOf(id: String): String = id match {
+    case "F-01" | "F-02" | "F-03" | "F-04" | "F-06" => "dws/funnel_hourly"
+    case "F-05" => "dws/channel_hourly"
+    case "F-07" => "tier0/heat_snapshot"
+    case "F-08" => "dws/position_daily"
+    case "C-01" => "dws/content_daily"
+    case "C-02" => "dwd/consume"
+    case "C-03" => "dws/content_daily"
+    case "I-01" | "I-02" | "I-04" => "dws/content_daily"
+    case "I-03" => "dws/content_daily"
+    case "I-05" => "dwd/relation"
+    case "R-01" | "R-02" => "dws/relation_daily"
+    case "R-03" => "dwd/relation"
+    case "R-04" | "R-05" => "dws/author_daily"
+    case "R-06" => "dwd/relation"
+    case "A-01" | "A-02" | "A-03" => "dws/author_daily"
+    case "A-04" => "dws/cold_start_daily"
+    case "S-01" | "S-02" | "S-05" => "dws/session_daily"
+    case "S-03" | "S-04" => "dwd/session"
+    case "U-01" | "U-02" => "dws/user_daily"
+    case "U-03" => "dws/retention_daily"
+    case "U-04" => "redis/crt:online"
+    case "Q-01" => "tier0/cheat_events"
+    case "Q-02" | "Q-03" => "dws/quality_daily"
+    case "V-01" => "verify/attribution"
+    case "V-02" => "verify/heat"
+    case other => sys.error(s"missing query table mapping for $other")
+  }
+
+  private def queryModeOf(id: String): String = id match {
+    case "F-05" | "C-02" | "C-03" | "I-03" | "Q-02" => "compute_on_demand"
+    case "U-04" => "redis_only"
+    case "F-07" => "stream_snapshot"
+    case "V-01" | "V-02" => "verification"
+    case _ => "materialized"
+  }
+
   private val schema = StructType(Seq(
     StructField("metric_id", StringType),
     StructField("name", StringType),
@@ -135,12 +179,29 @@ object SemanticDict {
     StructField("recomputable", BooleanType),
     StructField("truth_source", StringType),
     StructField("nature", StringType),
-    StructField("limitations", StringType)
+    StructField("limitations", StringType),
+    StructField("query_table", StringType),
+    StructField("query_mode", StringType),
+    StructField("read_only", BooleanType),
+    StructField("contract_version", StringType)
   ))
+
+  /** 语义字典内容指纹：任一指标口径/粒度/来源变化都会改变 Gate 的 contract_hash。 */
+  def definitionFingerprint: String = {
+    val material = metrics.map { m =>
+      Seq(m.id, m.name, m.definition, m.numerator, m.denominator, m.grain, m.dims,
+        m.tier.toString, m.source, m.recomputable.toString, m.truth, m.nature,
+        limitationsOf(m.id), queryTableOf(m.id), queryModeOf(m.id)).mkString("\u0001")
+    }.sorted.mkString("\n")
+    java.security.MessageDigest.getInstance("SHA-256")
+      .digest(material.getBytes(StandardCharsets.UTF_8))
+      .map(b => f"${b & 0xff}%02x").mkString
+  }
 
   def build(spark: SparkSession): Unit = {
     val rows = metrics.map(m => Row(m.id, m.name, m.definition, m.numerator, m.denominator,
-      m.grain, m.dims, m.tier, m.source, m.recomputable, m.truth, m.nature, limitationsOf(m.id)))
+      m.grain, m.dims, m.tier, m.source, m.recomputable, m.truth, m.nature, limitationsOf(m.id),
+      queryTableOf(m.id), queryModeOf(m.id), true, "metric-definitions-v1.3"))
     val df = spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema)
     DeltaIO.write(df, Lake.semanticMetricDict, Nil, "overwrite")
     println(s"[SEMANTIC] metric_dict rows=${df.count()}（业务 " +
